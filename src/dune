@@ -1,0 +1,14 @@
+(library
+ (name actor)
+ (public_name actor)
+ (modules Actor_s Actor_types Actor)
+ (libraries
+   containers.data
+   core
+   async
+   logs-async
+   logs-async-reporter
+   logs-async-ovh
+   warp10-async
+   uri
+   cohttp-async))
