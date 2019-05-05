@@ -151,6 +151,13 @@ module type S = sig
   (** Create a table of workers. *)
   val create_table : 'kind buffer_kind -> 'kind table
 
+  val queue : infinite queue table
+  val bounded : int -> bounded queue table
+  val dropbox : (dropbox t ->
+                 any_request ->
+                 any_request option ->
+                 any_request option) -> dropbox table
+
   (** An error returned when trying to communicate with a worker that
       has been closed. *)
   exception Closed of Name.t

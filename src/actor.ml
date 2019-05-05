@@ -233,6 +233,10 @@ module Make
       instances = Hashtbl.Poly.create () ;
       zombies = Hashtbl.Poly.create () }
 
+  let queue = create_table Queue
+  let bounded size = create_table (Bounded { size })
+  let dropbox merge = create_table (Dropbox { merge })
+
   let cleanup_worker (type kind) handlers (w : kind t) err =
     let (module Logger) = w.logger in
     let close (type a) (w : a t) =
