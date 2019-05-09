@@ -16,6 +16,9 @@ module Event = struct
   let dummy = ()
   let level () = Logs.Info
   let pp ppf () = Format.pp_print_bool ppf true
+
+  let warp10_url = None
+  let to_warp10 _ = None
 end
 
 module Request = struct

@@ -66,6 +66,10 @@ module type EVENT = sig
   (** Pretty printer, also used for logging *)
   val pp : Format.formatter -> t -> unit
 
+  (** Optionally convert the event to Warp10 format. *)
+  val warp10_url : Uri.t option
+  val to_warp10 : t -> Warp10.t option
+
 end
 
 (** The type of messages that are fed to the worker's event loop. *)
@@ -264,6 +268,10 @@ module type S = sig
 
   (** Record an event and make sure it is logged. *)
   val log_event : _ t -> Event.t -> unit Deferred.t
+
+  (** Record an event and make sure it is logged, but don't wait for
+      it. *)
+  val log_event_now : _ t -> Event.t -> unit
 
   (** Access the internal state, once initialized. *)
   val state : _ t -> Types.state

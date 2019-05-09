@@ -90,6 +90,8 @@ module Make
     table : 'kind table ;
     terminating : unit Ivar.t ;
     cleaned : unit Ivar.t ;
+
+    warp10 : Warp10.t Pipe.Writer.t ;
   }
   and 'kind table = {
     buffer_kind : 'kind buffer_kind ;
@@ -207,7 +209,14 @@ module Make
     record_event w evt ;
     let level = Event.level evt in
     let (module Logger) = w.logger in
+    begin match Event.to_warp10 evt with
+      | None -> Deferred.unit
+      | Some m -> Pipe.write_if_open w.warp10 m
+    end >>= fun () ->
     Logger.msg level (fun m -> m "@[<v 0>%a@]" Event.pp evt)
+
+  let log_event_now w evt =
+    don't_wait_for (log_event w evt)
 
   module type HANDLERS = sig
     type self
@@ -382,6 +391,13 @@ module Make
         end [ Logs.App ; Error ; Warning ; Info ; Debug ] in
       let module Logger =
         (val (Logs_async.src_log (Logs.Src.create id_name))) in
+      let warp10 = match Event.warp10_url with
+        | None -> Pipe.create_writer (fun r -> Pipe.close_read r; Deferred.unit)
+        | Some url -> begin
+          let r, w = Pipe.create () in
+              Warp10_async.record url r ;
+            w
+        end in
       let w = { limits ; parameters ; name ;
                 table ; buffer ; logger = (module Logger) ;
                 state = None ; id ;
@@ -391,6 +407,7 @@ module Make
                 status = Launching (Time_ns.now ()) ;
                 terminating = Ivar.create () ;
                 cleaned  = Ivar.create () ;
+                warp10
               } in
       begin
         if id_name = base_name then

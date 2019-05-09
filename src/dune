@@ -10,4 +10,5 @@
    logs-async-reporter
    logs-async-ovh
    uri
-   cohttp-async))
+   cohttp-async
+   warp10-async))
