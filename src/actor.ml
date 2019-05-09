@@ -210,8 +210,9 @@ module Make
     let level = Event.level evt in
     let (module Logger) = w.logger in
     begin match Event.to_warp10 evt with
-      | None -> Deferred.unit
-      | Some m -> Pipe.write_if_open w.warp10 m
+      | Some m when level >= w.limits.backlog_level ->
+        Pipe.write_if_open w.warp10 m
+      | _ -> Deferred.unit
     end >>= fun () ->
     Logger.msg level (fun m -> m "@[<v 0>%a@]" Event.pp evt)
 
