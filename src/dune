@@ -3,6 +3,8 @@
  (public_name actor)
  (modules Actor_s Actor_types Actor)
  (libraries
+   httpaf
+   httpaf-async
    containers.data
    core
    async

@@ -92,6 +92,7 @@ module Make
     cleaned : unit Ivar.t ;
 
     warp10 : Warp10.t Pipe.Writer.t ;
+    http_server : (Socket.Address.Inet.t, int) Tcp.Server.t option ;
   }
   and 'kind table = {
     buffer_kind : 'kind buffer_kind ;
@@ -360,11 +361,13 @@ module Make
 
   let launch
     : type kind.
-      kind table -> ?timeout:Time_ns.Span.t ->
+      kind table ->
+      ?timeout:Time_ns.Span.t ->
+      ?http_port:int ->
       Actor_types.limits -> Name.t -> Types.parameters ->
       (module HANDLERS with type self = kind t) ->
       kind t Deferred.t
-    = fun table ?timeout limits name parameters (module Handlers) ->
+    = fun table ?timeout ?http_port limits name parameters (module Handlers) ->
       let name_s =
         Format.asprintf "%a" Name.pp name in
       let full_name =
@@ -399,6 +402,46 @@ module Make
               Warp10_async.record url r ;
             w
         end in
+      let default_error_handler _saddr ?request:_ error handle =
+        let open Httpaf in
+        let message =
+          match error with
+          | `Exn exn -> Exn.to_string exn
+          | (#Status.client_error | #Status.server_error) as error ->
+            Status.to_string error
+        in
+        let body = handle Headers.empty in
+        Body.write_string body message;
+        Body.close_writer body in
+      let http_handler =
+        Httpaf_async.Server.create_connection_handler
+          ?config:None
+          ~request_handler:begin fun _saddr reqd ->
+            let open Httpaf in
+            let headers = Headers.of_list ["Content-Type", "application/json"] in
+            let resp = Response.create ~headers `OK in
+            let body = Reqd.respond_with_streaming
+                ~flush_headers_immediately:true
+                reqd resp in
+            List.iter event_log ~f:begin fun (lvl, evt) ->
+              Option.iter (EventRing.peek_front evt) ~f:begin fun e ->
+                Body.write_string body
+                  (Format.asprintf "{\"level\": \"%a\"; \"evt\": \"%a\"}@."
+                     Logs.pp_level lvl Event.pp e)
+              end
+            end ;
+            Body.close_writer body
+          end
+          ~error_handler:default_error_handler in
+      begin match http_port with
+        | None -> return None
+        | Some port ->
+          let open Tcp in
+          Server.create_sock
+            ~on_handler_error:`Ignore
+            (Where_to_listen.of_port port)
+            http_handler >>| Option.some
+      end >>= fun http_server ->
       let w = { limits ; parameters ; name ;
                 table ; buffer ; logger = (module Logger) ;
                 state = None ; id ;
@@ -408,7 +451,8 @@ module Make
                 status = Launching (Time_ns.now ()) ;
                 terminating = Ivar.create () ;
                 cleaned  = Ivar.create () ;
-                warp10
+                warp10 ;
+                http_server ;
               } in
       begin
         if id_name = base_name then

@@ -66,8 +66,13 @@ module type EVENT = sig
   (** Pretty printer, also used for logging *)
   val pp : Format.formatter -> t -> unit
 
-  (** Optionally convert the event to Warp10 format. *)
+  (** Optionally set a target warp10 server URL *)
   val warp10_url : Uri.t option
+
+  (** Optionally set a port for HTTP monitoring server *)
+  val http_port : int option
+
+  (** Optionally convert the event to Warp10 format. *)
   val to_warp10 : t -> Warp10.t option
 
 end
@@ -217,7 +222,9 @@ module type S = sig
   (** Creates a new worker instance.
       Parameter [queue_size] not passed means unlimited queue. *)
   val launch :
-    'kind table -> ?timeout:Time_ns.Span.t ->
+    'kind table ->
+    ?timeout:Time_ns.Span.t ->
+    ?http_port:int ->
     Actor_types.limits -> Name.t -> Types.parameters ->
     (module HANDLERS with type self = 'kind t) ->
     'kind t Deferred.t
