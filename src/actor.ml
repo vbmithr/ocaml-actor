@@ -41,7 +41,24 @@ module Make
   module Event = Event
   module Request = Request
   module Types = Types
-  module EventRing = CCRingBuffer.Make(Event)
+
+  module Timestamped_evt = struct
+    type t = {
+      ts : Time_ns.t ;
+      evt: Event.t ;
+    }
+
+    let dummy = {
+      ts = Time_ns.epoch ;
+      evt = Event.dummy ;
+    }
+
+    let create calibrator evt = {
+      ts = Time_stamp_counter.to_time_ns ~calibrator
+          (Time_stamp_counter.now ()) ; evt }
+  end
+
+  module EventRing = CCRingBuffer.Make(Timestamped_evt)
 
   let base_name = String.concat ~sep:"." Name.base
 
@@ -91,6 +108,7 @@ module Make
     terminating : unit Ivar.t ;
     cleaned : unit Ivar.t ;
 
+    calibrator : Time_stamp_counter.Calibrator.t ;
     warp10 : Warp10.t Pipe.Writer.t ;
     http_server : (Socket.Address.Inet.t, int) Tcp.Server.t option ;
   }
@@ -204,7 +222,8 @@ module Make
     let level = Event.level evt in
     if level >= w.limits.backlog_level then
       EventRing.push_back
-        (List.Assoc.find_exn ~equal:(=) w.event_log level) evt
+        (List.Assoc.find_exn ~equal:(=) w.event_log level)
+        (Timestamped_evt.create w.calibrator evt)
 
   let log_event w evt =
     record_event w evt ;
@@ -399,8 +418,8 @@ module Make
         | None -> Pipe.create_writer (fun r -> Pipe.close_read r; Deferred.unit)
         | Some url -> begin
           let r, w = Pipe.create () in
-              Warp10_async.record url r ;
-            w
+          don't_wait_for (Warp10_async.record url r) ;
+          w
         end in
       let default_error_handler _saddr ?request:_ error handle =
         let open Httpaf in
@@ -427,7 +446,7 @@ module Make
               Option.iter (EventRing.peek_front evt) ~f:begin fun e ->
                 Body.write_string body
                   (Format.asprintf "{\"level\": \"%a\"; \"evt\": \"%a\"}@."
-                     Logs.pp_level lvl Event.pp e)
+                     Logs.pp_level lvl Event.pp e.evt)
               end
             end ;
             Body.close_writer body
@@ -451,6 +470,7 @@ module Make
                 status = Launching (Time_ns.now ()) ;
                 terminating = Ivar.create () ;
                 cleaned  = Ivar.create () ;
+                calibrator = Time_stamp_counter.Calibrator.create () ;
                 warp10 ;
                 http_server ;
               } in
@@ -462,6 +482,12 @@ module Make
       end >>= fun () ->
       Hashtbl.Poly.set table.instances ~key:name ~data:w ;
       Handlers.on_launch w name parameters >>= fun state ->
+      Clock_ns.every
+        ~stop:(Ivar.read w.terminating)
+        ~continue_on_error:false
+        (Time_ns.Span.of_int_sec 60) begin fun () ->
+        Time_stamp_counter.Calibrator.calibrate w.calibrator
+      end ;
       w.status <- Running (Time_ns.now ()) ;
       w.state <- Some state ;
       don't_wait_for begin
@@ -501,10 +527,11 @@ module Make
     | None, _  -> assert false
     | Some state, _ -> state
 
-  let last_events w =
-    List.map
-      ~f:(fun (level, ring) -> (level, EventRing.to_list ring))
-      w.event_log
+  let latest_events ?(after=Time_ns.min_value) w =
+    List.map w.event_log ~f:begin fun (level, ring) ->
+      level, Array.filter_map (EventRing.to_array ring)
+        ~f:(fun { ts ; evt } -> if ts >= after then Some (ts, evt) else None)
+    end
 
   (* let pending_requests (type a) (w : a queue t) =
    *   let message_queue = match w.buffer with

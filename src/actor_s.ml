@@ -284,7 +284,8 @@ module type S = sig
   val state : _ t -> Types.state
 
   (** Access the event backlog. *)
-  val last_events : _ t -> (Logs.level * Event.t list) list
+  val latest_events :
+    ?after:Time_ns.t -> _ t -> (Logs.level * (Time_ns.t * Event.t) array) list
 
   (* (\** Introspect the message queue, gives the times requests were pushed. *\)
    * val pending_requests : _ queue t -> (Time_ns.t * Request.view) list *)
