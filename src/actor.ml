@@ -354,7 +354,8 @@ module Make
       | Ok () -> loop ()
       | Error err ->
         begin match Error.to_exn err with
-          | Exit_worker_loop _ -> Error.raise err
+          | Exit_worker_loop (Some err) -> Error.raise err
+          | Exit_worker_loop None -> Error.raise err
           | _ -> ()
         end ;
         Logger.err (fun m -> m "%a" Error.pp err) >>= fun () ->
