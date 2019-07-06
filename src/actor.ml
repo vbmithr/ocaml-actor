@@ -319,9 +319,9 @@ module Make
       pop w >>= function
       | None -> begin
           match w.status with
-          | Closing _ | Closed _ ->
-            (* Happens when shutdown exception is raised in the
-               current monitor. *)
+          | Closing _
+          | Closed _ -> (* Happens when shutdown exception is raised
+                           in the current monitor. *)
             Deferred.unit
           | _ ->
             Handlers.on_no_request w
