@@ -78,7 +78,7 @@ module Make
                    any_request ->
                    any_request option ->
                    any_request option) }
-      -> dropbox buffer_kind
+        -> dropbox buffer_kind
   and any_request = Any_request : _ Request.t -> any_request
 
   and _ buffer =
@@ -151,9 +151,9 @@ module Make
     may_raise_closed w ;
     match w.buffer with
     | Queue_buffer (_, message_queue) ->
-        Pipe.write message_queue (queue_item request)
+      Pipe.write message_queue (queue_item request)
     | Bounded_buffer (_, message_queue) ->
-        Pipe.write message_queue (queue_item request)
+      Pipe.write message_queue (queue_item request)
 
   let push_request_now (w : infinite queue t) request =
     may_raise_closed w ;
@@ -184,10 +184,10 @@ module Make
     let pop_queue message_queue =
       match w.timeout with
       | None -> begin
-        Pipe.read message_queue >>= function
+          Pipe.read message_queue >>= function
           | `Eof -> return None
           | `Ok m -> return (Some m)
-      end
+        end
       | Some timeout ->
         Clock_ns.with_timeout
           timeout (Pipe.read message_queue) >>= function
@@ -206,8 +206,8 @@ module Make
       | Some timeout ->
         Clock_ns.with_timeout
           timeout (Mvar.take message_box) >>= function
-          | `Timeout ->  return None
-          | `Result m -> return (Some m)
+        | `Timeout ->  return None
+        | `Result m -> return (Some m)
 
   let trigger_shutdown w =
     may_raise_closed w ;
@@ -418,10 +418,10 @@ module Make
       let warp10 = match Event.warp10_url with
         | None -> Pipe.create_writer (fun r -> Pipe.close_read r; Deferred.unit)
         | Some url -> begin
-          let r, w = Pipe.create () in
-          don't_wait_for (Warp10_async.record url r) ;
-          w
-        end in
+            let r, w = Pipe.create () in
+            don't_wait_for (Warp10_async.record url r) ;
+            w
+          end in
       let default_error_handler _saddr ?request:_ error handle =
         let open Httpaf in
         let message =
@@ -514,17 +514,17 @@ module Make
   let state w =
     match w.state, w.status with
     | None, Launching _  ->
-        invalid_arg
-          (Format.asprintf
-             "Worker.state (%s[%a]): \
-              state called before worker was initialized"
-             base_name Name.pp w.name)
+      invalid_arg
+        (Format.asprintf
+           "Worker.state (%s[%a]): \
+            state called before worker was initialized"
+           base_name Name.pp w.name)
     | None, (Closing _ | Closed _)  ->
-        invalid_arg
-          (Format.asprintf
-             "Worker.state (%s[%a]): \
-              state called after worker was terminated"
-             base_name Name.pp w.name)
+      invalid_arg
+        (Format.asprintf
+           "Worker.state (%s[%a]): \
+            state called after worker was terminated"
+           base_name Name.pp w.name)
     | None, _  -> assert false
     | Some state, _ -> state
 
