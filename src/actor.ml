@@ -363,7 +363,7 @@ module Make
         end >>= function
         | Ok () -> begin match w.status with
             | Closing _ | Closed _ -> Deferred.unit
-            | _ -> loop ()
+            | _ -> Clock_ns.after (Time_ns.Span.of_int_sec 1) >>= loop
           end
         | Error e ->
           Logger.err begin fun m ->
