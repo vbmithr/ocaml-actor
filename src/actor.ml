@@ -314,43 +314,44 @@ module Make
     let (module Handlers : HANDLERS with type self = kind t) = handlers in
     let (module Logger) = w.logger in
     let name = Name.to_string w.name in
+    let inner () =
+      w.monitor <- Monitor.current () ;
+      pop w >>= function
+      | None -> begin
+          match w.status with
+          | Closing _ | Closed _ ->
+            (* Happens when shutdown exception is raised in the
+               current monitor. *)
+            Deferred.unit
+          | _ ->
+            Handlers.on_no_request w
+        end
+      | Some (pushed, Message (request, u)) ->
+        let current_request = Request.view request in
+        let treated = Time_ns.now () in
+        w.current_request <- Some (pushed, treated, current_request) ;
+        Logger.debug begin fun m ->
+          m "@[<v 2>Request:@,%a@]" Request.pp current_request
+        end >>= fun () ->
+        match u with
+        | None ->
+          Handlers.on_request w request >>= fun res ->
+          let completed = Time_ns.now () in
+          w.current_request <- None ;
+          Handlers.on_completion w
+            request res Actor_types.{ pushed ; treated ; completed }
+        | Some u ->
+          Monitor.try_with_or_error
+            (fun () -> Handlers.on_request w request) >>= fun res ->
+          Ivar.fill u res ;
+          let res = Or_error.ok_exn res in
+          let completed = Time_ns.now () in
+          w.current_request <- None ;
+          Handlers.on_completion w
+            request res Actor_types.{ pushed ; treated ; completed } in
     let rec loop () =
-      Monitor.try_with_or_error ~extract_exn:true ~name begin fun () ->
-        w.monitor <- Monitor.current () ;
-        pop w >>= function
-        | None -> begin
-            match w.status with
-            | Closing _ | Closed _ ->
-              (* Happens when shutdown exception is raised in the
-                 current monitor. *)
-              Deferred.unit
-            | _ ->
-              Handlers.on_no_request w
-          end
-        | Some (pushed, Message (request, u)) ->
-          let current_request = Request.view request in
-          let treated = Time_ns.now () in
-          w.current_request <- Some (pushed, treated, current_request) ;
-          Logger.debug begin fun m ->
-            m "@[<v 2>Request:@,%a@]" Request.pp current_request
-          end >>= fun () ->
-          match u with
-          | None ->
-            Handlers.on_request w request >>= fun res ->
-            let completed = Time_ns.now () in
-            w.current_request <- None ;
-            Handlers.on_completion w
-              request res Actor_types.{ pushed ; treated ; completed }
-          | Some u ->
-            Monitor.try_with_or_error
-              (fun () -> Handlers.on_request w request) >>= fun res ->
-            Ivar.fill u res ;
-            let res = Or_error.ok_exn res in
-            let completed = Time_ns.now () in
-            w.current_request <- None ;
-            Handlers.on_completion w
-              request res Actor_types.{ pushed ; treated ; completed }
-      end >>= function
+      Monitor.try_with_or_error
+        ~extract_exn:true ~name inner >>= function
       | Ok () -> loop ()
       | Error err ->
         begin match Error.to_exn err with
