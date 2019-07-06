@@ -333,22 +333,14 @@ module Make
         Logger.debug begin fun m ->
           m "@[<v 2>Request:@,%a@]" Request.pp current_request
         end >>= fun () ->
-        match u with
-        | None ->
-          Handlers.on_request w request >>= fun res ->
-          let completed = Time_ns.now () in
-          w.current_request <- None ;
-          Handlers.on_completion w
-            request res Actor_types.{ pushed ; treated ; completed }
-        | Some u ->
-          Monitor.try_with_or_error
-            (fun () -> Handlers.on_request w request) >>= fun res ->
-          Ivar.fill u res ;
-          let res = Or_error.ok_exn res in
-          let completed = Time_ns.now () in
-          w.current_request <- None ;
-          Handlers.on_completion w
-            request res Actor_types.{ pushed ; treated ; completed } in
+        Monitor.try_with_or_error
+          (fun () -> Handlers.on_request w request) >>= fun res ->
+        Option.iter u ~f:(fun u -> Ivar.fill u res) ;
+        let res = Or_error.ok_exn res in
+        let completed = Time_ns.now () in
+        w.current_request <- None ;
+        Handlers.on_completion w
+          request res Actor_types.{ pushed ; treated ; completed } in
     let rec loop () =
       Monitor.try_with_or_error
         ~extract_exn:true ~name inner >>= function
