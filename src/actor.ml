@@ -243,6 +243,8 @@ module Make
     type self
     val on_launch :
       self -> Name.t -> Types.parameters -> Types.state Deferred.t
+    val on_launch_complete :
+      self -> unit Deferred.t
     val on_request :
       self -> 'a Request.t -> 'a Deferred.t
     val on_no_request :
@@ -495,6 +497,7 @@ module Make
           Deferred.unit
         | _ -> Deferred.unit
       end;
+      Handlers.on_launch_complete w >>= fun () ->
       return w
 
   let shutdown w =

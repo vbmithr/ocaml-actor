@@ -184,6 +184,10 @@ module type S = sig
     val on_launch :
       self -> Name.t -> Types.parameters -> Types.state Deferred.t
 
+    (** Called just afte {!state} has been initialized *)
+    val on_launch_complete :
+      self -> unit Deferred.t
+
     (** The main request processor, i.e. the body of the event loop. *)
     val on_request :
       self -> 'a Request.t -> 'a Deferred.t
