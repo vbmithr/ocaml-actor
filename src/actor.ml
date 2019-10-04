@@ -503,7 +503,7 @@ module Make
   let shutdown w =
     may_raise_closed w ;
     let (module Logger) = w.logger in
-    Logger.debug (fun m -> m "Triggering shutdown") >>= fun () ->
+    Logger.info (fun m -> m "Triggering shutdown") >>= fun () ->
     trigger_shutdown w ;
     Ivar.read w.terminating
 
