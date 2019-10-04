@@ -43,6 +43,8 @@ module W = Actor.Make(Name)(Event)(Request)(Types)
 module Default_handlers = struct
   type self = W.infinite W.queue W.t
 
+  let on_launch_complete _self =
+    Deferred.unit
   let on_launch _self _name _params =
     Deferred.unit
   let on_request _ _ =
