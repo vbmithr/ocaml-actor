@@ -190,7 +190,7 @@ module type S = sig
 
     (** The main request processor, i.e. the body of the event loop. *)
     val on_request :
-      self -> 'a Request.t -> 'a Deferred.t
+      self -> 'a Request.t -> 'a Deferred.Or_error.t
 
     (** Called when no request has been made before the timeout, if
         the parameter has been passed to {!launch}. *)

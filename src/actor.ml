@@ -246,7 +246,7 @@ module Make
     val on_launch_complete :
       self -> unit Deferred.t
     val on_request :
-      self -> 'a Request.t -> 'a Deferred.t
+      self -> 'a Request.t -> 'a Deferred.Or_error.t
     val on_no_request :
       self -> unit Deferred.t
     val on_close :
@@ -335,7 +335,7 @@ module Make
         Logger.debug begin fun m ->
           m "@[<v 2>Request:@,%a@]" Request.pp current_request
         end >>= fun () ->
-        Monitor.try_with_or_error
+        Monitor.try_with_join_or_error
           (fun () -> Handlers.on_request w request) >>= fun res ->
         Option.iter u ~f:(fun u -> Ivar.fill u res) ;
         let res = Or_error.ok_exn res in
