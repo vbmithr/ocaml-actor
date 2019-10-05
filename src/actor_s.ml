@@ -66,15 +66,8 @@ module type EVENT = sig
   (** Pretty printer, also used for logging *)
   val pp : Format.formatter -> t -> unit
 
-  (** Optionally set a target warp10 server URL *)
-  val warp10_url : Uri.t option
-
   (** Optionally set a port for HTTP monitoring server *)
   val http_port : int option
-
-  (** Optionally convert the event to Warp10 format. *)
-  val to_warp10 : t -> Warp10.t option
-
 end
 
 (** The type of messages that are fed to the worker's event loop. *)

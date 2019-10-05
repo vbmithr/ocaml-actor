@@ -11,5 +11,4 @@
    logs-async
    logs-async-reporter
    logs-async-ovh
-   uri
-   warp10-async))
+   uri))

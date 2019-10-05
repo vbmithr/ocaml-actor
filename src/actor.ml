@@ -109,7 +109,6 @@ module Make
     cleaned : unit Ivar.t ;
 
     calibrator : Time_stamp_counter.Calibrator.t ;
-    warp10 : Warp10.t Pipe.Writer.t ;
     http_server : (Socket.Address.Inet.t, int) Tcp.Server.t option ;
   }
   and 'kind table = {
@@ -229,11 +228,6 @@ module Make
     record_event w evt ;
     let level = Event.level evt in
     let (module Logger) = w.logger in
-    begin match Event.to_warp10 evt with
-      | Some m when level >= w.limits.backlog_level ->
-        Pipe.write_if_open w.warp10 m
-      | _ -> Deferred.unit
-    end >>= fun () ->
     Logger.msg level (fun m -> m "@[<v 0>%a@]" Event.pp evt)
 
   let log_event_now w evt =
@@ -410,13 +404,6 @@ module Make
         end [ Logs.App ; Error ; Warning ; Info ; Debug ] in
       let module Logger =
         (val (Logs_async.src_log (Logs.Src.create id_name))) in
-      let warp10 = match Event.warp10_url with
-        | None -> Pipe.create_writer (fun r -> Pipe.close_read r; Deferred.unit)
-        | Some url -> begin
-            let r, w = Pipe.create () in
-            don't_wait_for (Warp10_async.record url r) ;
-            w
-          end in
       let default_error_handler _saddr ?request:_ error handle =
         let open Httpaf in
         let message =
@@ -467,7 +454,6 @@ module Make
                 terminating = Ivar.create () ;
                 cleaned  = Ivar.create () ;
                 calibrator = Time_stamp_counter.Calibrator.create () ;
-                warp10 ;
                 http_server ;
               } in
       begin

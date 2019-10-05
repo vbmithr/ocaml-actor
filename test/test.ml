@@ -18,8 +18,6 @@ module Event = struct
   let pp ppf () = Format.pp_print_bool ppf true
 
   let http_port = None
-  let warp10_url = None
-  let to_warp10 _ = None
 end
 
 module Request = struct
