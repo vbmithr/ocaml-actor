@@ -31,6 +31,24 @@ module Types = Actor_types
 
 open S
 
+(* module SpanRing = CCRingBuffer.Make(struct
+ *     include Time_ns.Span
+ *     let dummy = day
+ *   end) *)
+
+(* let percentile a v =
+ *   Float.(round_up (v *. of_int (Array.length a)) |> to_int)
+ * 
+ * let complex_of_spanring ?(pct=[0.2;0.4;0.6;0.8;1.]) r =
+ *   let a = SpanRing.to_array r in
+ *   Array.sort ~compare:Time_ns.Span.compare a ;
+ *   let totaltime =
+ *     Array.fold a ~init:0. ~f:(fun a e -> a +. Time_ns.Span.to_us e) in
+ *   let pct = List.map pct ~f:begin fun p ->
+ *       p, Time_ns.Span.to_us (Array.get a (pred (percentile a p)))
+ *     end in
+ *   Prometheus.complex (Array.length a) totaltime pct *)
+
 module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
   module Event = Event
   module Request = Request
@@ -109,7 +127,11 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     cleaned : unit Ivar.t ;
 
     calibrator : Time_stamp_counter.Calibrator.t ;
-    http_server : (Socket.Address.Inet.t, int) Tcp.Server.t option ;
+
+    mutable nb_events : int ;
+    mutable nb_requests : int ;
+    (* treated_time: SpanRing.t ;
+     * completed_time: SpanRing.t ; *)
   }
   and 'kind table = {
     buffer_kind : 'kind buffer_kind ;
@@ -120,6 +142,12 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
 
   exception Closed of string
   exception Exit_worker_loop of Error.t option
+
+  let nb_pending_requests : type a. a t -> int * int = fun w ->
+    match w.buffer with
+    | Queue_buffer (resps, reqs) -> Pipe.length resps, Pipe.length reqs
+    | Bounded_buffer (resps, reqs) -> Pipe.length resps, Pipe.length reqs
+    | Dropbox_buffer mv -> if Mvar.is_empty mv then 0, 0 else 1, 1
 
   let may_raise_closed w =
     if Ivar.is_full w.terminating then raise (Closed w.name)
@@ -213,6 +241,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     w.monitor
 
   let record_event w evt =
+    w.nb_events <- Int.succ w.nb_events ;
     may_raise_closed w ;
     let level = Event.level evt in
     if level >= w.limits.backlog_level then
@@ -252,8 +281,8 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
   let create_table buffer_kind =
     { buffer_kind ;
       last_id = 0 ;
-      instances = Hashtbl.Poly.create () ;
-      zombies = Hashtbl.Poly.create () }
+      instances = String.Table.create () ;
+      zombies = Int.Table.create () }
 
   let queue = create_table Queue
   let bounded size = create_table (Bounded { size })
@@ -286,17 +315,17 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     close w ;
     w.status <- Closed (t0, Time_ns.now (), err) ;
     Logger.debug (fun m -> m "Now in Closed status") >>= fun () ->
-    Hashtbl.remove w.table.instances w.name ;
+    String.Table.remove w.table.instances w.name ;
     Handlers.on_close w >>= fun () ->
     w.state <- None ;
-    Hashtbl.Poly.set w.table.zombies ~key:w.id ~data:w ;
+    Int.Table.set w.table.zombies ~key:w.id ~data:w ;
     don't_wait_for begin
       Clock_ns.after w.limits.zombie_memory >>= fun () ->
       Logger.debug (fun m -> m "Cleaning up zombie memory") >>= fun () ->
       List.iter ~f:(fun (_, ring) -> EventRing.clear ring) w.event_log ;
       Clock_ns.after Time_ns.Span.(w.limits.zombie_lifetime - w.limits.zombie_memory) >>= fun () ->
       Logger.debug (fun m -> m "Removing zombie from table") >>= fun () ->
-      Hashtbl.remove w.table.zombies w.id ;
+      Int.Table.remove w.table.zombies w.id ;
       Ivar.fill w.cleaned () ;
       Logger.debug (fun m -> m "Zombies cleaned")
     end ;
@@ -330,6 +359,9 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
         let res = Or_error.ok_exn res in
         let completed = Time_ns.now () in
         w.current_request <- None ;
+        w.nb_requests <- succ w.nb_requests ;
+        (* SpanRing.push_back w.treated_time (Time_ns.diff treated pushed) ;
+         * SpanRing.push_back w.completed_time (Time_ns.diff completed pushed) ; *)
         Handlers.on_completion w
           req res Actor_types.{ pushed ; treated ; completed } in
     let rec loop () =
@@ -366,7 +398,6 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
   let launch
     : type kind.
       ?timeout:Time_ns.Span.t ->
-      ?http_port:int ->
       base_name:string list ->
       name:string ->
       kind table ->
@@ -374,13 +405,13 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       Types.parameters ->
       (module HANDLERS with type self = kind t) ->
       kind t Deferred.t
-    = fun ?timeout ?http_port ~base_name ~name table limits parameters (module Handlers) ->
+    = fun ?timeout ~base_name ~name table limits parameters (module Handlers) ->
       let full_name = String.concat ~sep:"." base_name ^ "." ^ name in
       let id =
         table.last_id <- table.last_id + 1 ;
         table.last_id in
       let id_name = Printf.sprintf "%s(%d)" full_name id in
-      if Hashtbl.mem table.instances name then
+      if String.Table.mem table.instances name then
         invalid_arg (Format.asprintf "Worker.launch: duplicate worker %s" full_name) ;
       let buffer : kind buffer =
         match table.buffer_kind with
@@ -398,46 +429,6 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
         end [ Logs.App ; Error ; Warning ; Info ; Debug ] in
       let module Logger =
         (val (Logs_async.src_log (Logs.Src.create id_name))) in
-      let default_error_handler _saddr ?request:_ error handle =
-        let open Httpaf in
-        let message =
-          match error with
-          | `Exn exn -> Exn.to_string exn
-          | (#Status.client_error | #Status.server_error) as error ->
-            Status.to_string error
-        in
-        let body = handle Headers.empty in
-        Body.write_string body message;
-        Body.close_writer body in
-      let http_handler =
-        Httpaf_async.Server.create_connection_handler
-          ?config:None
-          ~request_handler:begin fun _saddr reqd ->
-            let open Httpaf in
-            let headers = Headers.of_list ["Content-Type", "application/json"] in
-            let resp = Response.create ~headers `OK in
-            let body = Reqd.respond_with_streaming
-                ~flush_headers_immediately:true
-                reqd resp in
-            List.iter event_log ~f:begin fun (lvl, evt) ->
-              Option.iter (EventRing.peek_front evt) ~f:begin fun e ->
-                Body.write_string body
-                  (Format.asprintf "{\"level\": \"%a\"; \"evt\": \"%a\"}@."
-                     Logs.pp_level lvl Event.pp e.evt)
-              end
-            end ;
-            Body.close_writer body
-          end
-          ~error_handler:default_error_handler in
-      begin match http_port with
-        | None -> return None
-        | Some port ->
-          let open Tcp in
-          Server.create_sock
-            ~on_handler_error:`Ignore
-            (Where_to_listen.of_port port)
-            http_handler >>| Option.some
-      end >>= fun http_server ->
       let w = { limits ;
                 parameters ;
                 name ;
@@ -455,10 +446,14 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
                 terminating = Ivar.create () ;
                 cleaned  = Ivar.create () ;
                 calibrator = Time_stamp_counter.Calibrator.create () ;
-                http_server ;
+
+                nb_requests = 0;
+                nb_events = 0;
+                (* treated_time = SpanRing.create 1000;
+                 * completed_time = SpanRing.create 1000; *)
               } in
       Logger.info (fun m -> m "Worker started for %s" name) >>= fun () ->
-      Hashtbl.Poly.set table.instances ~key:name ~data:w ;
+      String.Table.set table.instances ~key:name ~data:w ;
       Handlers.on_launch w name parameters >>= fun state ->
       Clock_ns.every
         ~stop:(Ivar.read w.terminating)
@@ -481,6 +476,68 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       end;
       Handlers.on_launch_complete w >>= fun () ->
       return w
+
+  let request_handler w stop _saddr reqd =
+    let headers =
+      Httpaf.Headers.of_list ["Content-Type", "text/plain; version=0.0.4"] in
+    let labels = ["hostname", Unix.gethostname (); "actor", w.full_name ] in
+    let open Httpaf in
+    let resp = Response.create ~headers `OK in
+    let nb_resps, nb_reqs = nb_pending_requests w in
+    let float_metrics = Prometheus.[
+        counter
+          ~help:"Total number of events since actor startup"
+          ~labels "actor_nb_events" (Float.of_int w.nb_events) ;
+        counter
+          ~help:"Total number of requests completed since actor startup"
+          ~labels "actor_nb_requests" (Float.of_int w.nb_requests) ;
+        gauge
+          ~help:"Current number of pending requests"
+          ~labels "actor_nb_pending_requests" (Float.of_int nb_reqs) ;
+        gauge
+          ~help:"Current number of pending responses"
+          ~labels "actor_nb_pending_responses" (Float.of_int nb_resps) ;
+      ] in
+    (* let complex_metrics = Prometheus.[
+     *     summary
+     *       ~help:"Time needed to treat a request"
+     *       ~labels "actor_treated_time" (complex_of_spanring w.treated_time) ;
+     *     summary
+     *       ~help:"Time needed to complete a request"
+     *       ~labels "actor_treated_time" (complex_of_spanring w.completed_time) ;
+     *   ] in *)
+    Reqd.respond_with_string
+      reqd resp (Format.asprintf "%a" Prometheus.pp_list float_metrics) ;
+    Ivar.fill stop ()
+
+  let start_prometheus w port =
+    let default_error_handler stop _saddr ?request:_ error handle =
+      let open Httpaf in
+      let message =
+        match error with
+        | `Exn exn -> Exn.to_string exn
+        | (#Status.client_error | #Status.server_error) as error ->
+          Status.to_string error
+      in
+      let body = handle Headers.empty in
+      Body.write_string body message;
+      Body.close_writer body ;
+      Ivar.fill stop ()
+    in
+    let http_handler addr sock =
+      let stop = Ivar.create () in
+      Deferred.any_unit [
+        Ivar.read stop ;
+        Httpaf_async.Server.create_connection_handler
+          ~request_handler:(request_handler w stop)
+          ~error_handler:(default_error_handler stop)
+          addr sock
+      ] in
+    let open Tcp in
+    Server.create_sock
+      ~on_handler_error:`Ignore
+      (Where_to_listen.of_port port)
+      http_handler
 
   let shutdown w =
     may_raise_closed w ;
@@ -514,7 +571,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     Types.view (state w) w.parameters
 
   let list { instances ; _ } =
-    Hashtbl.Poly.fold instances
+    String.Table.fold instances
       ~f:(fun ~key:n ~data:w acc -> (n, w) :: acc)
       ~init:[]
 

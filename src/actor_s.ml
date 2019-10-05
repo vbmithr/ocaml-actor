@@ -24,7 +24,7 @@
 (*****************************************************************************)
 
 open Core_kernel
-open Async_kernel
+open Async
 
 (** Async based local event loops with automated introspection *)
 
@@ -49,9 +49,6 @@ module type EVENT = sig
 
   (** Pretty printer, also used for logging *)
   val pp : Format.formatter -> t -> unit
-
-  (** Optionally set a port for HTTP monitoring server *)
-  val http_port : int option
 end
 
 (** The type of messages that are fed to the worker's event loop. *)
@@ -203,13 +200,15 @@ module type S = sig
       Parameter [queue_size] not passed means unlimited queue. *)
   val launch :
     ?timeout:Time_ns.Span.t ->
-    ?http_port:int ->
     base_name:string list ->
     name:string ->
     'kind table ->
     Actor_types.limits -> Types.parameters ->
     (module HANDLERS with type self = 'kind t) ->
     'kind t Deferred.t
+
+  val start_prometheus :
+    'a t -> int -> (Socket.Address.Inet.t, int) Tcp.Server.t Deferred.t
 
   (** Triggers a worker termination and waits for its completion.
       Cannot be called from within the handlers.  *)
