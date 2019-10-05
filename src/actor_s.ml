@@ -30,22 +30,6 @@ open Async_kernel
 
 (** {2 Parameters to build a worker group} *)
 
-(** The name of the group of workers corresponding to an instanciation
-    of {!Make}, as well as the name of each worker in that group. *)
-module type NAME = sig
-
-  (** The name/path of the worker group *)
-  val base : string list
-
-  (** The abstract name of a single worker *)
-  type t
-
-  (** Pretty printer for displaying the worker name *)
-  val pp : Format.formatter -> t -> unit
-  val to_string : t -> string
-
-end
-
 (** Events that are used for logging and introspection.
     Events are pretty printed immediately in the log, and stored in
     the worker's event backlog for introspection. *)
@@ -121,7 +105,6 @@ end
     for each individual worker. *)
 module type S = sig
 
-  module Name: NAME
   module Event: EVENT
   module Request: REQUEST
   module Types: TYPES
@@ -162,7 +145,7 @@ module type S = sig
 
   (** An error returned when trying to communicate with a worker that
       has been closed. *)
-  exception Closed of Name.t
+  exception Closed of string
 
   (** The callback handlers specific to each worker instance. *)
   module type HANDLERS = sig
@@ -175,7 +158,7 @@ module type S = sig
         It is possible to initialize the message queue.
         Of course calling {!state} will fail at that point. *)
     val on_launch :
-      self -> Name.t -> Types.parameters -> Types.state Deferred.t
+      self -> string -> Types.parameters -> Types.state Deferred.t
 
     (** Called just afte {!state} has been initialized *)
     val on_launch_complete :
@@ -219,10 +202,12 @@ module type S = sig
   (** Creates a new worker instance.
       Parameter [queue_size] not passed means unlimited queue. *)
   val launch :
-    'kind table ->
     ?timeout:Time_ns.Span.t ->
     ?http_port:int ->
-    Actor_types.limits -> Name.t -> Types.parameters ->
+    base_name:string list ->
+    name:string ->
+    'kind table ->
+    Actor_types.limits -> Types.parameters ->
     (module HANDLERS with type self = 'kind t) ->
     'kind t Deferred.t
 
@@ -298,5 +283,5 @@ module type S = sig
   (** List the running workers in this group.
       After they are killed, workers are kept in the table
       for a number of seconds given in the {!Actor_types.limits}. *)
-  val list : 'a table -> (Name.t * 'a t) list
+  val list : 'a table -> (string * 'a t) list
 end

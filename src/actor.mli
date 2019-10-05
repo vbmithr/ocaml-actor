@@ -3,9 +3,7 @@ module Types = Actor_types
 
 open S
 
-module Make
-    (Name : NAME) (Event : EVENT) (Request : REQUEST) (Types : TYPES) : S
-  with module Name = Name
-   and module Event = Event
+module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) : S
+  with module Event = Event
    and module Request = Request
    and module Types = Types

@@ -4,13 +4,6 @@ open Async
 open Alcotest
 open Alcotest_async
 
-module Name = struct
-  let base = ["titania" ; "test" ; "dummy_worker"]
-  type t = string
-  let pp = Format.pp_print_string
-  let to_string s = s
-end
-
 module Event = struct
   type t = unit
   let dummy = ()
@@ -36,7 +29,7 @@ module Types = struct
   let pp ppf () = Format.pp_print_bool ppf true
 end
 
-module W = Actor.Make(Name)(Event)(Request)(Types)
+module W = Actor.Make(Event)(Request)(Types)
 
 module Default_handlers = struct
   type self = W.infinite W.queue W.t
@@ -68,11 +61,12 @@ let set_reporter () =
   Logs.set_reporter reporter ;
   Deferred.unit
 
+let base_name = ["test"]
+
 let worker_init () =
   let table = W.create_table Queue in
   let limits = Actor.Types.create_limits () in
-  W.launch
-    table limits "worker_init" () (module Default_handlers) >>= fun w ->
+  W.launch table limits ~base_name ~name:"worker_init" () (module Default_handlers) >>= fun w ->
   W.shutdown w
 
 let worker_no_request () =
@@ -88,7 +82,7 @@ let worker_no_request () =
   let table = W.create_table Queue in
   let limits = Actor.Types.create_limits () in
   W.launch ~timeout:(Time_ns.Span.of_int_ms 500)
-    table limits "worker_no_request" () (module Handlers) >>= fun w ->
+    table limits ~base_name ~name:"worker_no_request" () (module Handlers) >>= fun w ->
   Ivar.read iv >>= fun () ->
   W.shutdown w
 

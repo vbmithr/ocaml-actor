@@ -31,13 +31,7 @@ module Types = Actor_types
 
 open S
 
-module Make
-    (Name : NAME)
-    (Event : EVENT)
-    (Request : REQUEST)
-    (Types : TYPES) = struct
-
-  module Name = Name
+module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
   module Event = Event
   module Request = Request
   module Types = Types
@@ -59,8 +53,6 @@ module Make
   end
 
   module EventRing = CCRingBuffer.Make(Timestamped_evt)
-
-  let base_name = String.concat ~sep:"." Name.base
 
   type message =
       Message: { req: 'a Request.t;
@@ -106,7 +98,9 @@ module Make
     buffer : 'kind buffer ;
     event_log : (Logs.level * EventRing.t) list ;
     logger : (module Logs_async.LOG) ;
-    name : Name.t ;
+    name : string ;
+    full_name : string ;
+    id_name : string ;
     id : int ;
     mutable status : Actor_types.worker_status ;
     mutable current_request : (Time_ns.t * Time_ns.t * Request.view) option ;
@@ -120,11 +114,11 @@ module Make
   and 'kind table = {
     buffer_kind : 'kind buffer_kind ;
     mutable last_id : int ;
-    instances : (Name.t, 'kind t) Hashtbl.t ;
-    zombies : (int, 'kind t) Hashtbl.t
+    instances : 'kind t String.Table.t ;
+    zombies : 'kind t Int.Table.t
   }
 
-  exception Closed of Name.t
+  exception Closed of string
   exception Exit_worker_loop of Error.t option
 
   let may_raise_closed w =
@@ -238,7 +232,7 @@ module Make
   module type HANDLERS = sig
     type self
     val on_launch :
-      self -> Name.t -> Types.parameters -> Types.state Deferred.t
+      self -> string -> Types.parameters -> Types.state Deferred.t
     val on_launch_complete :
       self -> unit Deferred.t
     val on_request :
@@ -311,7 +305,6 @@ module Make
   let worker_loop (type kind) handlers (w : kind t) =
     let (module Handlers : HANDLERS with type self = kind t) = handlers in
     let (module Logger) = w.logger in
-    let name = Name.to_string w.name in
     let inner () =
       w.monitor <- Monitor.current () ;
       pop w >>= function
@@ -341,7 +334,7 @@ module Make
           req res Actor_types.{ pushed ; treated ; completed } in
     let rec loop () =
       Monitor.try_with_or_error
-        ~extract_exn:true ~name inner >>= function
+        ~extract_exn:true ~name:w.name inner >>= function
       | Ok () -> loop ()
       | Error err ->
         begin match Error.to_exn err with
@@ -350,7 +343,7 @@ module Make
           | _ -> ()
         end ;
         Logger.err (fun m -> m "%a" Error.pp err) >>= fun () ->
-        Monitor.try_with_or_error ~name begin fun () ->
+        Monitor.try_with_or_error ~name:w.name begin fun () ->
           match w.current_request with
           | None -> assert false
           | Some (pushed, treated, request) ->
@@ -372,22 +365,21 @@ module Make
 
   let launch
     : type kind.
-      kind table ->
       ?timeout:Time_ns.Span.t ->
       ?http_port:int ->
-      Actor_types.limits -> Name.t -> Types.parameters ->
+      base_name:string list ->
+      name:string ->
+      kind table ->
+      Actor_types.limits ->
+      Types.parameters ->
       (module HANDLERS with type self = kind t) ->
       kind t Deferred.t
-    = fun table ?timeout ?http_port limits name parameters (module Handlers) ->
-      let name_s =
-        Format.asprintf "%a" Name.pp name in
-      let full_name =
-        if name_s = "" then base_name else Format.asprintf "%s(%s)" base_name name_s in
+    = fun ?timeout ?http_port ~base_name ~name table limits parameters (module Handlers) ->
+      let full_name = String.concat ~sep:"." base_name ^ "." ^ name in
       let id =
         table.last_id <- table.last_id + 1 ;
         table.last_id in
-      let id_name =
-        if name_s = "" then base_name else Format.asprintf "%s(%d)" base_name id in
+      let id_name = Printf.sprintf "%s(%d)" full_name id in
       if Hashtbl.mem table.instances name then
         invalid_arg (Format.asprintf "Worker.launch: duplicate worker %s" full_name) ;
       let buffer : kind buffer =
@@ -446,9 +438,16 @@ module Make
             (Where_to_listen.of_port port)
             http_handler >>| Option.some
       end >>= fun http_server ->
-      let w = { limits ; parameters ; name ;
-                table ; buffer ; logger = (module Logger) ;
-                state = None ; id ;
+      let w = { limits ;
+                parameters ;
+                name ;
+                full_name ;
+                id_name ;
+                table ;
+                buffer ;
+                logger = (module Logger) ;
+                state = None ;
+                id ;
                 monitor = Monitor.create () ; (* placeholder *)
                 event_log ; timeout ;
                 current_request = None ;
@@ -458,12 +457,7 @@ module Make
                 calibrator = Time_stamp_counter.Calibrator.create () ;
                 http_server ;
               } in
-      begin
-        if id_name = base_name then
-          Logger.info (fun m -> m "Worker started")
-        else
-          Logger.info (fun m -> m "Worker started for %s" name_s)
-      end >>= fun () ->
+      Logger.info (fun m -> m "Worker started for %s" name) >>= fun () ->
       Hashtbl.Poly.set table.instances ~key:name ~data:w ;
       Handlers.on_launch w name parameters >>= fun state ->
       Clock_ns.every
@@ -498,17 +492,11 @@ module Make
   let state w =
     match w.state, w.status with
     | None, Launching _  ->
-      invalid_arg
-        (Format.asprintf
-           "Worker.state (%s[%a]): \
-            state called before worker was initialized"
-           base_name Name.pp w.name)
+      invalid_argf "Worker.state (%s): state called before worker was \
+                    initialized" w.id_name ()
     | None, (Closing _ | Closed _)  ->
-      invalid_arg
-        (Format.asprintf
-           "Worker.state (%s[%a]): \
-            state called after worker was terminated"
-           base_name Name.pp w.name)
+      invalid_argf "Worker.state (%s): state called after worker was \
+                    terminated" w.id_name ()
     | None, _  -> assert false
     | Some state, _ -> state
 
