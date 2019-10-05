@@ -24,7 +24,6 @@
 (*****************************************************************************)
 
 open Core
-open Async
 
 (** Some memory and time limits. *)
 type limits =
@@ -59,5 +58,5 @@ type request_status =
 type ('req, 'evt) full_status =
   { status : worker_status ;
     pending_requests : (Time_ns.t * 'req) list ;
-    backlog : (Log.Level.t * 'evt list) list ;
+    backlog : (Logs.level * 'evt list) list ;
     current_request : (Time_ns.t * Time_ns.t * 'req) option }
