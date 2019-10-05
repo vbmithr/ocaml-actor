@@ -62,7 +62,13 @@ module Make
 
   let base_name = String.concat ~sep:"." Name.base
 
-  type message = Message: 'a Request.t * 'a Or_error.t Ivar.t option -> message
+  type message =
+      Message: { req: 'a Request.t;
+                 resp: 'a Or_error.t Ivar.t option;
+                 ts: Time_ns.t; } -> message
+
+  let message ?(ts=Time_ns.now ()) ?resp req =
+    Message { req; resp; ts }
 
   type bounded
   type infinite
@@ -83,13 +89,13 @@ module Make
 
   and _ buffer =
     | Queue_buffer :
-        (Time_ns.t * message) Pipe.Reader.t *
-        (Time_ns.t * message) Pipe.Writer.t -> infinite queue buffer
+        message Pipe.Reader.t *
+        message Pipe.Writer.t -> infinite queue buffer
     | Bounded_buffer :
-        (Time_ns.t * message) Pipe.Reader.t *
-        (Time_ns.t * message) Pipe.Writer.t -> bounded queue buffer
+        message Pipe.Reader.t *
+        message Pipe.Writer.t -> bounded queue buffer
     | Dropbox_buffer :
-        (Time_ns.t * message) Mvar.Read_write.t -> dropbox buffer
+        message Mvar.Read_write.t -> dropbox buffer
 
   and 'kind t = {
     limits : Actor_types.limits ;
@@ -124,10 +130,6 @@ module Make
   let may_raise_closed w =
     if Ivar.is_full w.terminating then raise (Closed w.name)
 
-  let queue_item ?iv r =
-    Time_ns.now (),
-    Message (r, iv)
-
   let drop_request (w : dropbox t) request =
     may_raise_closed w ;
     let Dropbox { merge } = w.table.buffer_kind in
@@ -137,27 +139,27 @@ module Make
         match Mvar.peek message_box with
         | None ->
           merge w (Any_request request) None
-        | Some (_, Message (old, _)) ->
+        | Some (Message { req = old; _ }) ->
           Deferred.(don't_wait_for (ignore (Mvar.take message_box))) ;
           merge w (Any_request request) (Some (Any_request old))
       with
       | None -> Deferred.unit
       | Some (Any_request neu) ->
-        Mvar.put message_box (Time_ns.now (), Message (neu, None))
+        Mvar.put message_box (message neu)
     end (fun _ -> ())
 
   let push_request (type a) (w : a queue t) request =
     may_raise_closed w ;
     match w.buffer with
     | Queue_buffer (_, message_queue) ->
-      Pipe.write message_queue (queue_item request)
+      Pipe.write message_queue (message request)
     | Bounded_buffer (_, message_queue) ->
-      Pipe.write message_queue (queue_item request)
+      Pipe.write message_queue (message request)
 
   let push_request_now (w : infinite queue t) request =
     may_raise_closed w ;
     let Queue_buffer (_, message_queue) = w.buffer in
-    Pipe.write_without_pushback message_queue (queue_item request)
+    Pipe.write_without_pushback message_queue (message request)
 
   let try_push_request_now (w : bounded queue t) request =
     may_raise_closed w ;
@@ -165,7 +167,7 @@ module Make
     let Bounded { size } = w.table.buffer_kind in
     let qsize = Pipe.length message_queue in
     if qsize < size then begin
-      Pipe.write_without_pushback message_queue (queue_item request) ;
+      Pipe.write_without_pushback message_queue (message request) ;
       true
     end
     else false
@@ -175,9 +177,9 @@ module Make
     let message_queue = match w.buffer with
       | Queue_buffer (_, message_queue) -> message_queue
       | Bounded_buffer (_, message_queue) -> message_queue in
-    let iv = Ivar.create () in
-    Pipe.write message_queue (queue_item ~iv request) >>= fun () ->
-    Ivar.read iv
+    let resp = Ivar.create () in
+    Pipe.write message_queue (message ~resp request) >>= fun () ->
+    Ivar.read resp
 
   let pop (type a) (w : a t) =
     let pop_queue message_queue =
@@ -267,8 +269,8 @@ module Make
     let (module Logger) = w.logger in
     let close (type a) (w : a t) =
       let wakeup = function
-        | _, Message (_, Some iv) ->
-          Ivar.fill iv (Error (Error.of_exn (Closed w.name)))
+        | Message { resp = Some resp; _ } ->
+          Ivar.fill resp (Error (Error.of_exn (Closed w.name)))
         | _ -> () in
       let close_queue message_queue =
         match Pipe.read_now' message_queue with
@@ -322,21 +324,21 @@ module Make
           | _ ->
             Handlers.on_no_request w
         end
-      | Some (pushed, Message (request, u)) ->
-        let current_request = Request.view request in
+      | Some Message {req; resp; ts = pushed } ->
+        let current_request = Request.view req in
         let treated = Time_ns.now () in
         w.current_request <- Some (pushed, treated, current_request) ;
         Logger.debug begin fun m ->
           m "@[<v 2>Request:@,%a@]" Request.pp current_request
         end >>= fun () ->
         Monitor.try_with_join_or_error
-          (fun () -> Handlers.on_request w request) >>= fun res ->
-        Option.iter u ~f:(fun u -> Ivar.fill u res) ;
+          (fun () -> Handlers.on_request w req) >>= fun res ->
+        Option.iter resp ~f:(fun resp -> Ivar.fill resp res) ;
         let res = Or_error.ok_exn res in
         let completed = Time_ns.now () in
         w.current_request <- None ;
         Handlers.on_completion w
-          request res Actor_types.{ pushed ; treated ; completed } in
+          req res Actor_types.{ pushed ; treated ; completed } in
     let rec loop () =
       Monitor.try_with_or_error
         ~extract_exn:true ~name inner >>= function
@@ -515,14 +517,6 @@ module Make
       level, Array.filter_map (EventRing.to_array ring)
         ~f:(fun { ts ; evt } -> if ts >= after then Some (ts, evt) else None)
     end
-
-  (* let pending_requests (type a) (w : a queue t) =
-   *   let message_queue = match w.buffer with
-   *     | Queue_buffer (message_queue, _) -> message_queue
-   *     | Bounded_buffer (message_queue, _) -> message_queue in
-   *   List.map
-   *     ~f:(function (t, Message (req, _)) -> t, Request.view req)
-   *     (Pipe.peek message_queue) *)
 
   let status { status ; _ } = status
 

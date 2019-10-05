@@ -284,9 +284,6 @@ module type S = sig
   val latest_events :
     ?after:Time_ns.t -> _ t -> (Logs.level * (Time_ns.t * Event.t) array) list
 
-  (* (\** Introspect the message queue, gives the times requests were pushed. *\)
-   * val pending_requests : _ queue t -> (Time_ns.t * Request.view) list *)
-
   (** Get the running status of a worker. *)
   val status : _ t -> Actor_types.worker_status
 
