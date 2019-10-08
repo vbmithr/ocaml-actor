@@ -397,6 +397,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
 
   let launch
     : type kind.
+      ?log_src:Logs.Src.t ->
       ?timeout:Time_ns.Span.t ->
       base_name:string list ->
       name:string ->
@@ -405,7 +406,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       Types.parameters ->
       (module HANDLERS with type self = kind t) ->
       kind t Deferred.t
-    = fun ?timeout ~base_name ~name table limits parameters (module Handlers) ->
+    = fun ?log_src ?timeout ~base_name ~name table limits parameters (module Handlers) ->
       let full_name = String.concat ~sep:"." base_name ^ "." ^ name in
       let id =
         table.last_id <- table.last_id + 1 ;
@@ -428,7 +429,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
           l, EventRing.create limits.backlog_size
         end [ Logs.App ; Error ; Warning ; Info ; Debug ] in
       let module Logger =
-        (val (Logs_async.src_log (Logs.Src.create id_name))) in
+        (val (Logs_async.src_log (Option.value log_src ~default:(Logs.Src.create id_name)))) in
       let w = { limits ;
                 parameters ;
                 name ;

@@ -199,6 +199,7 @@ module type S = sig
   (** Creates a new worker instance.
       Parameter [queue_size] not passed means unlimited queue. *)
   val launch :
+    ?log_src:Logs.Src.t ->
     ?timeout:Time_ns.Span.t ->
     base_name:string list ->
     name:string ->
