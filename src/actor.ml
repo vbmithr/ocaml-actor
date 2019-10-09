@@ -350,11 +350,9 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
         let current_request = Request.view req in
         let treated = Time_ns.now () in
         w.current_request <- Some (pushed, treated, current_request) ;
-        Logger.debug begin fun m ->
-          m "@[<v 2>Request:@,%a@]" Request.pp current_request
-        end >>= fun () ->
-        Monitor.try_with_join_or_error
-          (fun () -> Handlers.on_request w req) >>= fun res ->
+        Logger.debug (fun m ->
+            m "@[<v 2>Request:@,%a@]" Request.pp current_request) >>= fun () ->
+        Handlers.on_request w req >>= fun res ->
         Option.iter resp ~f:(fun resp -> Ivar.fill resp res) ;
         let res = Or_error.ok_exn res in
         let completed = Time_ns.now () in
