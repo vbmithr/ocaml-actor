@@ -17,6 +17,7 @@ module Request = struct
   type 'a t = unit
   type view = unit
   let view () = ()
+  let level _ = Logs.Debug
   let pp ppf () = Format.pp_print_bool ppf true
 end
 

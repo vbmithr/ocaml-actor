@@ -69,6 +69,9 @@ module type REQUEST = sig
   (** The projection function from full request to simple views. *)
   val view : 'a t -> view
 
+  (** Assigns a logging level for each request type. *)
+  val level : view -> Logs.level
+
   (** Pretty printer, also used for logging by {!Request_event}. *)
   val pp : Format.formatter -> view -> unit
 

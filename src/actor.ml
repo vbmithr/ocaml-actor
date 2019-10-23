@@ -350,7 +350,8 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
         let current_request = Request.view req in
         let treated = Time_ns.now () in
         w.current_request <- Some (pushed, treated, current_request) ;
-        Logger.debug (fun m ->
+        let level = Request.level current_request in
+        Logger.msg level (fun m ->
             m "@[<v 2>Request:@,%a@]" Request.pp current_request) >>= fun () ->
         Handlers.on_request w req >>= fun res ->
         Option.iter resp ~f:(fun resp -> Ivar.fill resp res) ;
