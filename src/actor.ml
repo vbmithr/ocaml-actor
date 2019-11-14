@@ -112,7 +112,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     timeout : Time_ns.Span.t option ;
     parameters : Types.parameters ;
     mutable (* only for init *) state : Types.state option ;
-    mutable (* only for init *) monitor : Monitor.t ;
+    monitor : Monitor.t ;
     buffer : 'kind buffer ;
     event_log : (Logs.level * EventRing.t) list ;
     logger : (module Logs_async.LOG) ;
@@ -203,24 +203,25 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     Pipe.write message_queue (message ~resp request) >>= fun () ->
     Ivar.read resp
 
-  let pop (type a) (w : a t) =
-    let pop_queue message_queue =
-      match w.timeout with
-      | None -> begin
-          Pipe.read message_queue >>= function
-          | `Eof -> return None
-          | `Ok m -> return (Some m)
-        end
-      | Some timeout ->
-        Clock_ns.with_timeout
-          timeout (Pipe.read message_queue) >>= function
-        | `Timeout
-        | `Result `Eof -> return None
-        | `Result (`Ok m) -> return (Some m) in
+  let pop_queue w message_queue =
+    match w.timeout with
+    | None -> begin
+        Pipe.read message_queue >>= function
+        | `Eof -> return None
+        | `Ok m -> return (Some m)
+      end
+    | Some timeout ->
+      Clock_ns.with_timeout
+        timeout (Pipe.read message_queue) >>= function
+      | `Timeout
+      | `Result `Eof -> return None
+      | `Result (`Ok m) -> return (Some m)
+
+  let pop : type a. a t -> message option Deferred.t = fun w ->
     may_raise_closed w ;
     match w.buffer with
-    | Queue_buffer (message_queue, _) -> pop_queue message_queue
-    | Bounded_buffer (message_queue, _) -> pop_queue message_queue
+    | Queue_buffer (message_queue, _) -> pop_queue w message_queue
+    | Bounded_buffer (message_queue, _) -> pop_queue w message_queue
     | Dropbox_buffer message_box ->
       match w.timeout with
       | None ->
@@ -288,24 +289,25 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
   let bounded size = create_table (Bounded { size })
   let dropbox merge = create_table (Dropbox { merge })
 
+  let close (type a) (w : a t) =
+    let wakeup = function
+      | Message { resp = Some resp; _ } ->
+        Ivar.fill resp (Error (Error.of_exn (Closed w.name)))
+      | _ -> () in
+    let close_queue message_queue =
+      match Pipe.read_now' message_queue with
+      | `Eof | `Nothing_available -> ()
+      | `Ok messages ->
+        Queue.iter ~f:wakeup messages ;
+        Pipe.close_read message_queue in
+    match w.buffer with
+    | Queue_buffer (message_queue, _) -> close_queue message_queue
+    | Bounded_buffer (message_queue, _) -> close_queue message_queue
+    | Dropbox_buffer message_box ->
+      Option.iter ~f:wakeup (Mvar.peek message_box)
+
   let cleanup_worker (type kind) handlers (w : kind t) err =
     let (module Logger) = w.logger in
-    let close (type a) (w : a t) =
-      let wakeup = function
-        | Message { resp = Some resp; _ } ->
-          Ivar.fill resp (Error (Error.of_exn (Closed w.name)))
-        | _ -> () in
-      let close_queue message_queue =
-        match Pipe.read_now' message_queue with
-        | `Eof | `Nothing_available -> ()
-        | `Ok messages ->
-          Queue.iter ~f:wakeup messages ;
-          Pipe.close_read message_queue in
-      match w.buffer with
-      | Queue_buffer (message_queue, _) -> close_queue message_queue
-      | Bounded_buffer (message_queue, _) -> close_queue message_queue
-      | Dropbox_buffer message_box ->
-        Option.iter ~f:wakeup (Mvar.peek message_box) in
     let (module Handlers : HANDLERS with type self = kind t) = handlers in
     let t0 = match w.status with
       | Running t0 -> t0
@@ -331,68 +333,40 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     end ;
     Logger.debug (fun m -> m "Worker cleaned")
 
-  let worker_loop (type kind) handlers (w : kind t) =
+  let process_one (type kind) handlers w =
     let (module Handlers : HANDLERS with type self = kind t) = handlers in
     let (module Logger) = w.logger in
-    let inner () =
-      w.monitor <- Monitor.current () ;
-      pop w >>= function
-      | None -> begin
-          match w.status with
-          | Closing _
-          | Closed _ -> (* Happens when shutdown exception is raised
-                           in the current monitor. *)
-            Deferred.unit
-          | _ ->
-            Handlers.on_no_request w
-        end
-      | Some Message {req; resp; ts = pushed } ->
-        let current_request = Request.view req in
-        let treated = Time_ns.now () in
-        w.current_request <- Some (pushed, treated, current_request) ;
-        let level = Request.level current_request in
-        Logger.msg level (fun m ->
-            m "@[<v 2>Request:@,%a@]" Request.pp current_request) >>= fun () ->
-        Handlers.on_request w req >>= fun res ->
-        Option.iter resp ~f:(fun resp -> Ivar.fill resp res) ;
-        let res = Or_error.ok_exn res in
-        let completed = Time_ns.now () in
-        w.current_request <- None ;
-        w.nb_requests <- succ w.nb_requests ;
-        (* SpanRing.push_back w.treated_time (Time_ns.diff treated pushed) ;
-         * SpanRing.push_back w.completed_time (Time_ns.diff completed pushed) ; *)
-        Handlers.on_completion w
-          req res Actor_types.{ pushed ; treated ; completed } in
-    let rec loop () =
-      Monitor.try_with_or_error
-        ~extract_exn:true ~name:w.name inner >>= function
-      | Ok () -> loop ()
-      | Error err ->
-        begin match Error.to_exn err with
-          | Exit_worker_loop (Some err) -> Error.raise err
-          | Exit_worker_loop None -> Error.raise err
-          | _ -> ()
-        end ;
-        Logger.err (fun m -> m "%a" Error.pp err) >>= fun () ->
-        Monitor.try_with_or_error ~name:w.name begin fun () ->
-          match w.current_request with
-          | None -> assert false
-          | Some (pushed, treated, request) ->
-            let completed = Time_ns.now () in
-            w.current_request <- None ;
-            Handlers.on_error w
-              request Actor_types.{ pushed ; treated ; completed } err
-        end >>= function
-        | Ok () -> begin match w.status with
-            | Closing _ | Closed _ -> Deferred.unit
-            | _ -> Clock_ns.after (Time_ns.Span.of_int_sec 1) >>= loop
-          end
-        | Error e ->
-          Logger.err begin fun m ->
-            m "@[<v 0>Worker crashed:@,%a@]" Error.pp e
-          end >>= fun () ->
-          raise (Exit_worker_loop (Some e)) in
-    loop ()
+    pop w >>= function
+    | None -> begin
+        match w.status with
+        | Closing _
+        | Closed _ -> (* Happens when shutdown exception is raised
+                         in the current monitor. *)
+          Deferred.unit
+        | _ ->
+          Handlers.on_no_request w
+      end
+    | Some Message {req; resp; ts = pushed } ->
+      let current_request = Request.view req in
+      let treated = Time_ns.now () in
+      w.current_request <- Some (pushed, treated, current_request) ;
+      let level = Request.level current_request in
+      Logger.msg level begin fun m ->
+        m "Request %a" Request.pp current_request
+      end >>= fun () ->
+      Handlers.on_request w req >>= fun res ->
+      Option.iter resp ~f:(fun resp -> Ivar.fill resp res) ;
+      let res = Or_error.ok_exn res in
+      let completed = Time_ns.now () in
+      Logger.msg level begin fun m ->
+        m "Request %a executed" Request.pp current_request
+      end  >>= fun () ->
+      w.current_request <- None ;
+      w.nb_requests <- succ w.nb_requests ;
+      (* SpanRing.push_back w.treated_time (Time_ns.diff treated pushed) ;
+       * SpanRing.push_back w.completed_time (Time_ns.diff completed pushed) ; *)
+      Handlers.on_completion w
+        req res Actor_types.{ pushed ; treated ; completed }
 
   let launch
     : type kind.
@@ -439,7 +413,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
                 logger = (module Logger) ;
                 state = None ;
                 id ;
-                monitor = Monitor.create () ; (* placeholder *)
+                monitor = Monitor.create () ;
                 event_log ; timeout ;
                 current_request = None ;
                 status = Launching (Time_ns.now ()) ;
@@ -463,17 +437,43 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       end ;
       w.status <- Running (Time_ns.now ()) ;
       w.state <- Some state ;
-      don't_wait_for begin
-        try_with ~extract_exn:true begin fun () ->
-          worker_loop (module Handlers) w
-        end >>= function
-        | Error (Exit_worker_loop err) ->
-          Logger.info (fun m -> m "Worker terminating") >>= fun () ->
-          cleanup_worker (module Handlers) w err >>= fun () ->
+      let rec inner () =
+        Scheduler.within' ~monitor:w.monitor begin fun () ->
+          process_one (module Handlers) w
+        end >>= inner in
+      don't_wait_for (inner ()) ;
+      Monitor.detach_and_iter_errors w.monitor ~f:begin fun exn ->
+        match Monitor.extract_exn exn with
+        | Exit_worker_loop err ->
           Ivar.fill w.terminating () ;
-          Deferred.unit
-        | _ -> Deferred.unit
-      end;
+          don't_wait_for begin
+            Logger.info (fun m -> m "Worker terminating") >>= fun () ->
+            Monitor.try_with
+              (fun () -> cleanup_worker (module Handlers) w err) >>= fun _ ->
+            Deferred.unit
+          end
+        | exn -> don't_wait_for begin
+            Logger.err (fun m -> m "%a" Exn.pp exn) >>= fun () ->
+            match w.current_request with
+            | None -> assert false
+            | Some (pushed, treated, request) ->
+              let completed = Time_ns.now () in
+              w.current_request <- None ;
+              Monitor.try_with_or_error begin fun () ->
+                Handlers.on_error w
+                  request Actor_types.{ pushed ; treated ; completed } (Error.of_exn exn)
+              end >>= function
+              | Ok () -> begin match w.status with
+                  | Closing _ | Closed _ -> Deferred.unit
+                  | _ -> Clock_ns.after (Time_ns.Span.of_int_sec 1)
+                end
+              | Error e ->
+                Logger.err begin fun m ->
+                  m "@[<v 0>Worker crashed:@,%a@]" Error.pp e
+                end >>| fun () ->
+                Monitor.send_exn w.monitor (Exit_worker_loop (Some e))
+          end
+      end ;
       Handlers.on_launch_complete w >>= fun () ->
       return w
 
