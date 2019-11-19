@@ -127,6 +127,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     cleaned : unit Ivar.t ;
 
     calibrator : Time_stamp_counter.Calibrator.t ;
+    mutable prometheus: (Socket.Address.Inet.t, int) Tcp.Server.t option ;
 
     mutable nb_events : int ;
     mutable nb_requests : int ;
@@ -368,10 +369,73 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       Handlers.on_completion w
         req res Actor_types.{ pushed ; treated ; completed }
 
+  let request_handler w stop _saddr reqd =
+    let headers =
+      Httpaf.Headers.of_list ["Content-Type", "text/plain; version=0.0.4"] in
+    let labels = ["hostname", Unix.gethostname (); "actor", w.full_name ] in
+    let open Httpaf in
+    let resp = Response.create ~headers `OK in
+    let nb_resps, nb_reqs = nb_pending_requests w in
+    let float_metrics = Prometheus.[
+        counter
+          ~help:"Total number of events since actor startup"
+          ~labels "actor_nb_events" (Float.of_int w.nb_events) ;
+        counter
+          ~help:"Total number of requests completed since actor startup"
+          ~labels "actor_nb_requests" (Float.of_int w.nb_requests) ;
+        gauge
+          ~help:"Current number of pending requests"
+          ~labels "actor_nb_pending_requests" (Float.of_int nb_reqs) ;
+        gauge
+          ~help:"Current number of pending responses"
+          ~labels "actor_nb_pending_responses" (Float.of_int nb_resps) ;
+      ] in
+    (* let complex_metrics = Prometheus.[
+     *     summary
+     *       ~help:"Time needed to treat a request"
+     *       ~labels "actor_treated_time" (complex_of_spanring w.treated_time) ;
+     *     summary
+     *       ~help:"Time needed to complete a request"
+     *       ~labels "actor_treated_time" (complex_of_spanring w.completed_time) ;
+     *   ] in *)
+    Reqd.respond_with_string
+      reqd resp (Format.asprintf "%a" Prometheus.pp_list float_metrics) ;
+    Ivar.fill stop ()
+
+  let start_prometheus w ~port =
+    let default_error_handler stop _saddr ?request:_ error handle =
+      let open Httpaf in
+      let message =
+        match error with
+        | `Exn exn -> Exn.to_string exn
+        | (#Status.client_error | #Status.server_error) as error ->
+          Status.to_string error
+      in
+      let body = handle Headers.empty in
+      Body.write_string body message;
+      Body.close_writer body ;
+      Ivar.fill stop ()
+    in
+    let http_handler addr sock =
+      let stop = Ivar.create () in
+      Deferred.any_unit [
+        Ivar.read stop ;
+        Httpaf_async.Server.create_connection_handler
+          ~request_handler:(request_handler w stop)
+          ~error_handler:(default_error_handler stop)
+          addr sock
+      ] in
+    let open Tcp in
+    Server.create_sock
+      ~on_handler_error:`Ignore
+      (Where_to_listen.of_port port)
+      http_handler
+
   let launch
     : type kind.
       ?log_src:Logs.Src.t ->
       ?timeout:Time_ns.Span.t ->
+      ?prom_port:int ->
       base_name:string list ->
       name:string ->
       kind table ->
@@ -379,7 +443,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       Types.parameters ->
       (module HANDLERS with type self = kind t) ->
       kind t Deferred.t
-    = fun ?log_src ?timeout ~base_name ~name table limits parameters (module Handlers) ->
+    = fun ?log_src ?timeout ?prom_port ~base_name ~name table limits parameters (module Handlers) ->
       let full_name = String.concat ~sep:"." base_name ^ "." ^ name in
       let id =
         table.last_id <- table.last_id + 1 ;
@@ -420,12 +484,18 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
                 terminating = Ivar.create () ;
                 cleaned  = Ivar.create () ;
                 calibrator = Time_stamp_counter.Calibrator.create () ;
+                prometheus = None;
 
                 nb_requests = 0;
                 nb_events = 0;
                 (* treated_time = SpanRing.create 1000;
                  * completed_time = SpanRing.create 1000; *)
               } in
+      begin match prom_port with
+        | None -> return None
+        | Some port -> start_prometheus w ~port >>| Option.some
+      end >>= fun prometheus ->
+      w.prometheus <- prometheus ;
       Logger.info (fun m -> m "Worker started for %s" name) >>= fun () ->
       String.Table.set table.instances ~key:name ~data:w ;
       Handlers.on_launch w name parameters >>= fun state ->
@@ -448,8 +518,13 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
           Ivar.fill w.terminating () ;
           don't_wait_for begin
             Logger.info (fun m -> m "Worker terminating") >>= fun () ->
-            Monitor.try_with
-              (fun () -> cleanup_worker (module Handlers) w err) >>= fun _ ->
+            Monitor.try_with begin fun () -> begin
+                match w.prometheus with
+                | None -> Deferred.unit
+                | Some p -> Tcp.Server.close ~close_existing_connections:true p
+              end >>= fun () ->
+              cleanup_worker (module Handlers) w err
+            end >>= fun _ ->
             Deferred.unit
           end
         | exn -> don't_wait_for begin
@@ -476,68 +551,6 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       end ;
       Handlers.on_launch_complete w >>= fun () ->
       return w
-
-  let request_handler w stop _saddr reqd =
-    let headers =
-      Httpaf.Headers.of_list ["Content-Type", "text/plain; version=0.0.4"] in
-    let labels = ["hostname", Unix.gethostname (); "actor", w.full_name ] in
-    let open Httpaf in
-    let resp = Response.create ~headers `OK in
-    let nb_resps, nb_reqs = nb_pending_requests w in
-    let float_metrics = Prometheus.[
-        counter
-          ~help:"Total number of events since actor startup"
-          ~labels "actor_nb_events" (Float.of_int w.nb_events) ;
-        counter
-          ~help:"Total number of requests completed since actor startup"
-          ~labels "actor_nb_requests" (Float.of_int w.nb_requests) ;
-        gauge
-          ~help:"Current number of pending requests"
-          ~labels "actor_nb_pending_requests" (Float.of_int nb_reqs) ;
-        gauge
-          ~help:"Current number of pending responses"
-          ~labels "actor_nb_pending_responses" (Float.of_int nb_resps) ;
-      ] in
-    (* let complex_metrics = Prometheus.[
-     *     summary
-     *       ~help:"Time needed to treat a request"
-     *       ~labels "actor_treated_time" (complex_of_spanring w.treated_time) ;
-     *     summary
-     *       ~help:"Time needed to complete a request"
-     *       ~labels "actor_treated_time" (complex_of_spanring w.completed_time) ;
-     *   ] in *)
-    Reqd.respond_with_string
-      reqd resp (Format.asprintf "%a" Prometheus.pp_list float_metrics) ;
-    Ivar.fill stop ()
-
-  let start_prometheus w port =
-    let default_error_handler stop _saddr ?request:_ error handle =
-      let open Httpaf in
-      let message =
-        match error with
-        | `Exn exn -> Exn.to_string exn
-        | (#Status.client_error | #Status.server_error) as error ->
-          Status.to_string error
-      in
-      let body = handle Headers.empty in
-      Body.write_string body message;
-      Body.close_writer body ;
-      Ivar.fill stop ()
-    in
-    let http_handler addr sock =
-      let stop = Ivar.create () in
-      Deferred.any_unit [
-        Ivar.read stop ;
-        Httpaf_async.Server.create_connection_handler
-          ~request_handler:(request_handler w stop)
-          ~error_handler:(default_error_handler stop)
-          addr sock
-      ] in
-    let open Tcp in
-    Server.create_sock
-      ~on_handler_error:`Ignore
-      (Where_to_listen.of_port port)
-      http_handler
 
   let shutdown w =
     may_raise_closed w ;

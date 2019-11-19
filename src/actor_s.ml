@@ -204,15 +204,13 @@ module type S = sig
   val launch :
     ?log_src:Logs.Src.t ->
     ?timeout:Time_ns.Span.t ->
+    ?prom_port:int ->
     base_name:string list ->
     name:string ->
     'kind table ->
     Actor_types.limits -> Types.parameters ->
     (module HANDLERS with type self = 'kind t) ->
     'kind t Deferred.t
-
-  val start_prometheus :
-    'a t -> int -> (Socket.Address.Inet.t, int) Tcp.Server.t Deferred.t
 
   (** Triggers a worker termination and waits for its completion.
       Cannot be called from within the handlers.  *)
