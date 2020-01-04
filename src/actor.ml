@@ -267,7 +267,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     val on_launch_complete :
       self -> unit Deferred.t
     val on_request :
-      self -> 'a Request.t -> 'a Deferred.Or_error.t
+      self -> 'a Request.t -> 'a Deferred.t
     val on_no_request :
       self -> unit Deferred.t
     val on_close :
@@ -356,18 +356,17 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
         m "Request %a" Request.pp current_request
       end >>= fun () ->
       Handlers.on_request w req >>= fun res ->
-      Option.iter resp ~f:(fun resp -> Ivar.fill resp res) ;
-      let res = Or_error.ok_exn res in
+      Option.iter resp ~f:(fun resp -> Ivar.fill resp (Ok res)) ;
       let completed = Time_ns.now () in
+      Handlers.on_completion w req res
+        Actor_types.{ pushed ; treated ; completed } >>= fun () ->
       Logger.msg level begin fun m ->
         m "Request %a executed" Request.pp current_request
-      end  >>= fun () ->
+      end >>| fun () ->
       w.current_request <- None ;
-      w.nb_requests <- succ w.nb_requests ;
+      w.nb_requests <- succ w.nb_requests
       (* SpanRing.push_back w.treated_time (Time_ns.diff treated pushed) ;
        * SpanRing.push_back w.completed_time (Time_ns.diff completed pushed) ; *)
-      Handlers.on_completion w
-        req res Actor_types.{ pushed ; treated ; completed }
 
   let request_handler w stop _saddr reqd =
     let headers =
@@ -430,6 +429,41 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       ~on_handler_error:`Ignore
       (Where_to_listen.of_port port)
       http_handler
+
+  let handle_errors (type kind)
+      (module Logger : Logs_async.LOG)
+      (module Handlers : HANDLERS with type self = kind t)
+      (w : kind t) exn =
+    let exit_worker_loop err =
+      Ivar.fill w.terminating () ;
+      Logger.info (fun m -> m "Worker terminating") >>= fun () ->
+      Monitor.try_with begin fun () -> begin
+          match w.prometheus with
+          | None -> Deferred.unit
+          | Some p -> Tcp.Server.close ~close_existing_connections:true p
+        end >>= fun () ->
+        cleanup_worker (module Handlers) w err
+      end >>= fun _ ->
+      Deferred.unit in
+    match Monitor.extract_exn exn with
+    | Exit_worker_loop err -> exit_worker_loop err
+    | exn ->
+      Logger.err (fun m -> m "Exception raised in actor's monitor: %a" Exn.pp exn) >>= fun () ->
+      match w.current_request with
+      | None -> assert false
+      | Some (pushed, treated, request) ->
+        let completed = Time_ns.now () in
+        w.current_request <- None ;
+        Monitor.try_with_or_error begin fun () ->
+          Handlers.on_error w
+            request Actor_types.{ pushed ; treated ; completed } (Error.of_exn exn)
+        end >>= function
+        | Ok () -> Deferred.unit
+        | Error e ->
+          Logger.err begin fun m ->
+            m "@[<v 0>Worker crashed:@,%a@]" Error.pp e
+          end >>= fun () ->
+          exit_worker_loop (Some e)
 
   let launch
     : type kind.
@@ -508,46 +542,14 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       w.status <- Running (Time_ns.now ()) ;
       w.state <- Some state ;
       let rec inner () =
-        Scheduler.within' ~monitor:w.monitor begin fun () ->
-          process_one (module Handlers) w
-        end >>= inner in
+        try_with (fun () -> process_one (module Handlers) w) >>= function
+        | Ok () -> inner ()
+        | Error exn ->
+          handle_errors (module Logger) (module Handlers) w exn >>=
+          inner in
       don't_wait_for (inner ()) ;
       Monitor.detach_and_iter_errors w.monitor ~f:begin fun exn ->
-        match Monitor.extract_exn exn with
-        | Exit_worker_loop err ->
-          Ivar.fill w.terminating () ;
-          don't_wait_for begin
-            Logger.info (fun m -> m "Worker terminating") >>= fun () ->
-            Monitor.try_with begin fun () -> begin
-                match w.prometheus with
-                | None -> Deferred.unit
-                | Some p -> Tcp.Server.close ~close_existing_connections:true p
-              end >>= fun () ->
-              cleanup_worker (module Handlers) w err
-            end >>= fun _ ->
-            Deferred.unit
-          end
-        | exn -> don't_wait_for begin
-            Logger.err (fun m -> m "%a" Exn.pp exn) >>= fun () ->
-            match w.current_request with
-            | None -> assert false
-            | Some (pushed, treated, request) ->
-              let completed = Time_ns.now () in
-              w.current_request <- None ;
-              Monitor.try_with_or_error begin fun () ->
-                Handlers.on_error w
-                  request Actor_types.{ pushed ; treated ; completed } (Error.of_exn exn)
-              end >>= function
-              | Ok () -> begin match w.status with
-                  | Closing _ | Closed _ -> Deferred.unit
-                  | _ -> Clock_ns.after (Time_ns.Span.of_int_sec 1)
-                end
-              | Error e ->
-                Logger.err begin fun m ->
-                  m "@[<v 0>Worker crashed:@,%a@]" Error.pp e
-                end >>| fun () ->
-                Monitor.send_exn w.monitor (Exit_worker_loop (Some e))
-          end
+        don't_wait_for (handle_errors (module Logger) (module Handlers) w exn)
       end ;
       Handlers.on_launch_complete w >>= fun () ->
       return w
