@@ -184,17 +184,13 @@ module type S = sig
         handle the error for ad-hoc logging, and still use
         {!trigger_shutdown} to kill the worker. *)
     val on_error :
-      self ->
-      Request.view ->
-      Actor_types.request_status ->
-      Error.t -> unit Deferred.t
+      self -> Request.view -> Actor_types.request_status -> Error.t ->
+      unit Deferred.t
 
     (** A function called at the end of the worker loop in case of a
         successful treatment of the current request. *)
     val on_completion :
-      self ->
-      'a Request.t -> 'a ->
-      Actor_types.request_status ->
+      self -> 'a Request.t -> 'a -> Actor_types.request_status ->
       unit Deferred.t
 
   end
