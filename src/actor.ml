@@ -31,24 +31,6 @@ module Types = Actor_types
 
 open S
 
-(* module SpanRing = CCRingBuffer.Make(struct
- *     include Time_ns.Span
- *     let dummy = day
- *   end) *)
-
-(* let percentile a v =
- *   Float.(round_up (v *. of_int (Array.length a)) |> to_int)
- * 
- * let complex_of_spanring ?(pct=[0.2;0.4;0.6;0.8;1.]) r =
- *   let a = SpanRing.to_array r in
- *   Array.sort ~compare:Time_ns.Span.compare a ;
- *   let totaltime =
- *     Array.fold a ~init:0. ~f:(fun a e -> a +. Time_ns.Span.to_us e) in
- *   let pct = List.map pct ~f:begin fun p ->
- *       p, Time_ns.Span.to_us (Array.get a (pred (percentile a p)))
- *     end in
- *   Prometheus.complex (Array.length a) totaltime pct *)
-
 module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
   module Event = Event
   module Request = Request
@@ -128,11 +110,10 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
 
     calibrator : Time_stamp_counter.Calibrator.t ;
     mutable prometheus: (Socket.Address.Inet.t, int) Tcp.Server.t option ;
+    mutable prometheus_metrics: unit -> Prometheus.t String.Map.t ;
 
     mutable nb_events : int ;
     mutable nb_requests : int ;
-    (* treated_time: SpanRing.t ;
-     * completed_time: SpanRing.t ; *)
   }
   and 'kind table = {
     buffer_kind : 'kind buffer_kind ;
@@ -365,8 +346,6 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       end >>| fun () ->
       w.current_request <- None ;
       w.nb_requests <- succ w.nb_requests
-      (* SpanRing.push_back w.treated_time (Time_ns.diff treated pushed) ;
-       * SpanRing.push_back w.completed_time (Time_ns.diff completed pushed) ; *)
 
   let request_handler w stop _saddr reqd =
     let headers =
@@ -375,30 +354,25 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     let open Httpaf in
     let resp = Response.create ~headers `OK in
     let nb_resps, nb_reqs = nb_pending_requests w in
-    let float_metrics = Prometheus.[
-        counter
-          ~help:"Total number of events since actor startup"
-          ~labels "actor_nb_events" (Float.of_int w.nb_events) ;
-        counter
-          ~help:"Total number of requests completed since actor startup"
-          ~labels "actor_nb_requests" (Float.of_int w.nb_requests) ;
-        gauge
+    let metrics = [
+      Prometheus.counter
+        ~help:"Total number of events since actor startup"
+        ~labels "actor_nb_events" (Float.of_int w.nb_events) ;
+      Prometheus.counter
+        ~help:"Total number of requests completed since actor startup"
+        ~labels "actor_nb_requests" (Float.of_int w.nb_requests) ;
+      Prometheus.gauge
           ~help:"Current number of pending requests"
           ~labels "actor_nb_pending_requests" (Float.of_int nb_reqs) ;
-        gauge
-          ~help:"Current number of pending responses"
-          ~labels "actor_nb_pending_responses" (Float.of_int nb_resps) ;
-      ] in
-    (* let complex_metrics = Prometheus.[
-     *     summary
-     *       ~help:"Time needed to treat a request"
-     *       ~labels "actor_treated_time" (complex_of_spanring w.treated_time) ;
-     *     summary
-     *       ~help:"Time needed to complete a request"
-     *       ~labels "actor_treated_time" (complex_of_spanring w.completed_time) ;
-     *   ] in *)
+      Prometheus.gauge
+        ~help:"Current number of pending responses"
+        ~labels "actor_nb_pending_responses" (Float.of_int nb_resps) ] in
+    let init = String.Map.map (w.prometheus_metrics ()) ~f:(Prometheus.add_labels labels) in
+    let metrics = List.fold_left metrics ~init ~f:begin fun a data ->
+        String.Map.add_exn a ~key:data.name ~data:(Prometheus.add_labels labels data)
+      end in
     Reqd.respond_with_string
-      reqd resp (Format.asprintf "%a" Prometheus.pp_list float_metrics) ;
+      reqd resp (Format.asprintf "%a" Prometheus.pp_list (String.Map.data metrics)) ;
     Ivar.fill stop ()
 
   let start_prometheus w ~port =
@@ -469,7 +443,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     : type kind.
       ?log_src:Logs.Src.t ->
       ?timeout:Time_ns.Span.t ->
-      ?prom_port:int ->
+      ?prom:int ->
       base_name:string list ->
       name:string ->
       kind table ->
@@ -477,7 +451,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       Types.parameters ->
       (module HANDLERS with type self = kind t) ->
       kind t Deferred.t
-    = fun ?log_src ?timeout ?prom_port ~base_name ~name table limits parameters (module Handlers) ->
+    = fun ?log_src ?timeout ?prom ~base_name ~name table limits parameters (module Handlers) ->
       let full_name = String.concat ~sep:"." base_name ^ "." ^ name in
       let id =
         table.last_id <- table.last_id + 1 ;
@@ -519,15 +493,15 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
                 cleaned  = Ivar.create () ;
                 calibrator = Time_stamp_counter.Calibrator.create () ;
                 prometheus = None;
+                prometheus_metrics = Fn.const String.Map.empty ;
 
                 nb_requests = 0;
                 nb_events = 0;
-                (* treated_time = SpanRing.create 1000;
-                 * completed_time = SpanRing.create 1000; *)
               } in
-      begin match prom_port with
+      begin match prom with
         | None -> return None
-        | Some port -> start_prometheus w ~port >>| Option.some
+        | Some port ->
+          start_prometheus w ~port >>| Option.some
       end >>= fun prometheus ->
       w.prometheus <- prometheus ;
       Logger.info (fun m -> m "Worker started for %s" name) >>= fun () ->
@@ -590,7 +564,6 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       ~f:(fun ~key:n ~data:w acc -> (n, w) :: acc)
       ~init:[]
 
-  (* let protect { canceler } ?on_error f =
-   *   protect ?on_error ~canceler f *)
-
+  let prometheus_metrics t = t.prometheus_metrics ()
+  let set_prometheus_metrics t m = t.prometheus_metrics <- m
 end

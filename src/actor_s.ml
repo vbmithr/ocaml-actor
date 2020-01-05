@@ -199,7 +199,7 @@ module type S = sig
   val launch :
     ?log_src:Logs.Src.t ->
     ?timeout:Time_ns.Span.t ->
-    ?prom_port:int ->
+    ?prom:int ->
     base_name:string list ->
     name:string ->
     'kind table ->
@@ -280,4 +280,7 @@ module type S = sig
       After they are killed, workers are kept in the table
       for a number of seconds given in the {!Actor_types.limits}. *)
   val list : 'a table -> (string * 'a t) list
+
+  val prometheus_metrics : _ t -> Prometheus.t String.Map.t
+  val set_prometheus_metrics : _ t -> (unit -> Prometheus.t String.Map.t) -> unit
 end
