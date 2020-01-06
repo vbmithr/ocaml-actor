@@ -120,6 +120,12 @@ module type S = sig
   type 'a queue and bounded and infinite
   type dropbox
 
+  (** Type returned by [current_request]. *)
+  type current_request = {
+    pushed : Time_ns.t ;
+    treated : Time_ns.t ;
+    req : Request.view ;
+  }
 
   (** Supported kinds of internal buffers. *)
   type _ buffer_kind =
@@ -271,7 +277,7 @@ module type S = sig
   (** Get the request being treated by a worker.
       Gives the time the request was pushed, and the time its
       treatment started. *)
-  val current_request : _ t -> (Time_ns.t * Time_ns.t * Request.view) option
+  val current_request : _ t -> current_request option
 
   (** Introspect the state of a worker. *)
   val view : _ t -> Types.view
@@ -281,6 +287,6 @@ module type S = sig
       for a number of seconds given in the {!Actor_types.limits}. *)
   val list : 'a table -> (string * 'a t) list
 
-  val prometheus_metrics : _ t -> Prometheus.t String.Map.t
-  val set_prometheus_metrics : _ t -> (unit -> Prometheus.t String.Map.t) -> unit
+  val prometheus_metrics : _ t -> Prometheus.t list
+  val set_prometheus_metrics : _ t -> (unit -> Prometheus.t list) -> unit
 end

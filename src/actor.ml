@@ -103,18 +103,31 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     id_name : string ;
     id : int ;
     mutable status : Actor_types.worker_status ;
-    mutable current_request : (Time_ns.t * Time_ns.t * Request.view) option ;
+    mutable current_request : current_request option ;
     table : 'kind table ;
     terminating : unit Ivar.t ;
     cleaned : unit Ivar.t ;
 
     calibrator : Time_stamp_counter.Calibrator.t ;
     mutable prometheus: (Socket.Address.Inet.t, int) Tcp.Server.t option ;
-    mutable prometheus_metrics: unit -> Prometheus.t String.Map.t ;
+    mutable prometheus_metrics: unit -> Prometheus.t list ;
 
     mutable nb_events : int ;
-    mutable nb_requests : int ;
+    mutable total_treated : int ;
+    mutable total_completed : int ;
+    mutable total_treated_time : Time_ns.Span.t ;
+    mutable total_completed_time : Time_ns.Span.t ;
+
+    quantiles_treated   : Prometheus.KLL.t ;
+    quantiles_completed : Prometheus.KLL.t ;
   }
+
+  and current_request = {
+    pushed : Time_ns.t ;
+    treated : Time_ns.t ;
+    req : Request.view ;
+  }
+
   and 'kind table = {
     buffer_kind : 'kind buffer_kind ;
     mutable last_id : int ;
@@ -329,9 +342,13 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
           Handlers.on_no_request w
       end
     | Some Message {req; resp; ts = pushed } ->
-      let current_request = Request.view req in
       let treated = Time_ns.now () in
-      w.current_request <- Some (pushed, treated, current_request) ;
+      let current_request = Request.view req in
+      w.current_request <- Some { pushed; treated; req = current_request } ;
+      w.total_treated <- succ w.total_treated ;
+      let treated_time = Time_ns.diff treated pushed in
+      w.total_treated_time <- Time_ns.Span.(w.total_treated_time + treated_time) ;
+      Prometheus.KLL.update w.quantiles_treated (Time_ns.Span.to_us treated_time) ;
       let level = Request.level current_request in
       Logger.msg level begin fun m ->
         m "Request %a" Request.pp current_request
@@ -345,7 +362,10 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
         m "Request %a executed" Request.pp current_request
       end >>| fun () ->
       w.current_request <- None ;
-      w.nb_requests <- succ w.nb_requests
+      w.total_completed <- succ w.total_completed ;
+      let completed_time = Time_ns.diff completed pushed in
+      w.total_completed_time <- Time_ns.Span.(w.total_completed_time + completed_time) ;
+      Prometheus.KLL.update w.quantiles_completed (Time_ns.Span.to_us completed_time)
 
   let request_handler w stop _saddr reqd =
     let headers =
@@ -358,21 +378,18 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       Prometheus.counter
         ~help:"Total number of events since actor startup"
         ~labels "actor_nb_events" (Float.of_int w.nb_events) ;
-      Prometheus.counter
-        ~help:"Total number of requests completed since actor startup"
-        ~labels "actor_nb_requests" (Float.of_int w.nb_requests) ;
       Prometheus.gauge
-          ~help:"Current number of pending requests"
-          ~labels "actor_nb_pending_requests" (Float.of_int nb_reqs) ;
+        ~help:"Current number of pending requests"
+        ~labels "actor_nb_pending_requests" (Float.of_int nb_reqs) ;
       Prometheus.gauge
         ~help:"Current number of pending responses"
         ~labels "actor_nb_pending_responses" (Float.of_int nb_resps) ] in
-    let init = String.Map.map (w.prometheus_metrics ()) ~f:(Prometheus.add_labels labels) in
+    let init = List.map (w.prometheus_metrics ()) ~f:(Prometheus.add_labels labels) in
     let metrics = List.fold_left metrics ~init ~f:begin fun a data ->
-        String.Map.add_exn a ~key:data.name ~data:(Prometheus.add_labels labels data)
+        Prometheus.add_labels labels data :: a
       end in
     Reqd.respond_with_string
-      reqd resp (Format.asprintf "%a" Prometheus.pp_list (String.Map.data metrics)) ;
+      reqd resp (Format.asprintf "%a" Prometheus.pp_list metrics) ;
     Ivar.fill stop ()
 
   let start_prometheus w ~port =
@@ -425,12 +442,11 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       Logger.err (fun m -> m "Exception raised in actor's monitor: %a" Exn.pp exn) >>= fun () ->
       match w.current_request with
       | None -> assert false
-      | Some (pushed, treated, request) ->
+      | Some { pushed; treated; req } ->
         let completed = Time_ns.now () in
         w.current_request <- None ;
         Monitor.try_with_or_error begin fun () ->
-          Handlers.on_error w
-            request Actor_types.{ pushed ; treated ; completed } (Error.of_exn exn)
+          Handlers.on_error w req Actor_types.{ pushed ; treated ; completed } (Error.of_exn exn)
         end >>= function
         | Ok () -> Deferred.unit
         | Error e ->
@@ -493,9 +509,16 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
                 cleaned  = Ivar.create () ;
                 calibrator = Time_stamp_counter.Calibrator.create () ;
                 prometheus = None;
-                prometheus_metrics = Fn.const String.Map.empty ;
+                prometheus_metrics = Fn.const [] ;
 
-                nb_requests = 0;
+                quantiles_treated = Prometheus.KLL.create () ;
+                quantiles_completed = Prometheus.KLL.create () ;
+
+                total_treated = 0;
+                total_completed = 0;
+                total_treated_time = Time_ns.Span.zero ;
+                total_completed_time = Time_ns.Span.zero ;
+
                 nb_events = 0;
               } in
       begin match prom with
