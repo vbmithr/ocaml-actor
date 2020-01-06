@@ -138,6 +138,18 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
   exception Closed of string
   exception Exit_worker_loop of Error.t option
 
+  let summary_of_treated { total_treated; total_treated_time; quantiles_treated; _ } = {
+    Prometheus.count = total_treated ;
+    Prometheus.sum = Time_ns.Span.to_sec total_treated_time;
+    data = quantiles_treated, Prometheus.FSet.of_list [0.5;0.9;0.99]
+  }
+
+  let summary_of_completed { total_completed; total_completed_time; quantiles_completed; _ } = {
+    Prometheus.count = total_completed ;
+    Prometheus.sum = Time_ns.Span.to_sec total_completed_time;
+    data = quantiles_completed, Prometheus.FSet.of_list [0.5;0.9;0.99]
+  }
+
   let nb_pending_requests : type a. a t -> int * int = fun w ->
     match w.buffer with
     | Queue_buffer (resps, reqs) -> Pipe.length resps, Pipe.length reqs
@@ -348,7 +360,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       w.total_treated <- succ w.total_treated ;
       let treated_time = Time_ns.diff treated pushed in
       w.total_treated_time <- Time_ns.Span.(w.total_treated_time + treated_time) ;
-      Prometheus.KLL.update w.quantiles_treated (Time_ns.Span.to_us treated_time) ;
+      Prometheus.KLL.update w.quantiles_treated (Time_ns.Span.to_sec treated_time) ;
       let level = Request.level current_request in
       Logger.msg level begin fun m ->
         m "Request %a" Request.pp current_request
@@ -365,7 +377,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       w.total_completed <- succ w.total_completed ;
       let completed_time = Time_ns.diff completed pushed in
       w.total_completed_time <- Time_ns.Span.(w.total_completed_time + completed_time) ;
-      Prometheus.KLL.update w.quantiles_completed (Time_ns.Span.to_us completed_time)
+      Prometheus.KLL.update w.quantiles_completed (Time_ns.Span.to_sec completed_time)
 
   let request_handler w stop _saddr reqd =
     let headers =
@@ -377,13 +389,20 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     let metrics = [
       Prometheus.counter
         ~help:"Total number of events since actor startup"
-        ~labels "actor_nb_events" (Float.of_int w.nb_events) ;
+        ~labels "actor_events_total" (Float.of_int w.nb_events) ;
       Prometheus.gauge
         ~help:"Current number of pending requests"
-        ~labels "actor_nb_pending_requests" (Float.of_int nb_reqs) ;
+        ~labels "actor_pending_requests_total" (Float.of_int nb_reqs) ;
       Prometheus.gauge
         ~help:"Current number of pending responses"
-        ~labels "actor_nb_pending_responses" (Float.of_int nb_resps) ] in
+        ~labels "actor_pending_responses_total" (Float.of_int nb_resps) ;
+      Prometheus.summary
+        ~help:"Summary of treated time"
+        ~labels "actor_treated_time_seconds" (summary_of_treated w)  ;
+      Prometheus.summary
+        ~help:"Summary of completed time"
+        ~labels "actor_completed_time_seconds" (summary_of_completed w)  ;
+    ] in
     let init = List.map (w.prometheus_metrics ()) ~f:(Prometheus.add_labels labels) in
     let metrics = List.fold_left metrics ~init ~f:begin fun a data ->
         Prometheus.add_labels labels data :: a
