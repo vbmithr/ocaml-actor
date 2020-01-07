@@ -110,7 +110,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
 
     calibrator : Time_stamp_counter.Calibrator.t ;
     mutable prometheus: (Socket.Address.Inet.t, int) Tcp.Server.t option ;
-    mutable prometheus_metrics: unit -> Prometheus.t list ;
+    mutable metrics: (unit -> Prometheus.t) String.Map.t ;
 
     mutable nb_events : int ;
     mutable total_treated : int ;
@@ -387,23 +387,23 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     let open Httpaf in
     let resp = Response.create ~headers `OK in
     let nb_resps, nb_reqs = nb_pending_requests w in
-    let metrics = [
-      counter "actor_events_total"
-        ~help:"Total number of events since startup"
-        [ metric ~labels (Float.of_int w.nb_events) ] ;
-      gauge "actor_pending_total"
-        ~help:"Current number of pending items"
-        [ metric ~labels:(("type","request")::labels)  (Float.of_int nb_reqs) ;
-          metric ~labels:(("type","response")::labels) (Float.of_int nb_resps) ] ;
-      summary "actor_time_seconds"
-        ~help:"Summary of processing time"
-        [ metric ~labels:(("time","treated")::labels)   (summary_of_treated w) ;
-          metric ~labels:(("time","completed")::labels) (summary_of_completed w) ] ;
-    ] in
-    let init = List.map (w.prometheus_metrics ()) ~f:(Prometheus.add_labels labels) in
-    let metrics = List.fold_left metrics ~init ~f:begin fun a data ->
-        Prometheus.add_labels labels data :: a
+    let metrics =
+      String.Map.fold_right w.metrics ~init:[] ~f:begin fun ~key:_ ~data a ->
+        add_labels labels (data ()) :: a
       end in
+    let metrics =
+      counter "actor_events_total"
+        ~help:"Total number of events since startup."
+        [ labels, create_series (Float.of_int w.nb_events) ] ::
+      gauge "actor_pending_total"
+        ~help:"Current number of pending items."
+        [ (("type","request")::labels), create_series (Float.of_int nb_reqs) ;
+          (("type","response")::labels), create_series (Float.of_int nb_resps) ] ::
+      summary "actor_time_seconds"
+        ~help:"Summary of processing time."
+        [ (("time","treated")::labels), create_series (summary_of_treated w) ;
+          (("time","completed")::labels), create_series (summary_of_completed w) ] ::
+      metrics in
     Reqd.respond_with_string
       reqd resp (Format.asprintf "%a" Prometheus.pp_list metrics) ;
     Ivar.fill stop ()
@@ -525,7 +525,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
                 cleaned  = Ivar.create () ;
                 calibrator = Time_stamp_counter.Calibrator.create () ;
                 prometheus = None;
-                prometheus_metrics = Fn.const [] ;
+                metrics = String.Map.empty ;
 
                 quantiles_treated = Prometheus.KLL.create () ;
                 quantiles_completed = Prometheus.KLL.create () ;
@@ -603,6 +603,13 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       ~f:(fun ~key:n ~data:w acc -> (n, w) :: acc)
       ~init:[]
 
-  let prometheus_metrics t = t.prometheus_metrics ()
-  let set_prometheus_metrics t m = t.prometheus_metrics <- m
+  let set_metrics t m =
+    t.metrics <-  List.fold_left
+        ~init:String.Map.empty
+        ~f:(fun a (key, data) -> String.Map.set a ~key ~data) m
+
+  let merge_metrics t m =
+    t.metrics <- List.fold_left
+        ~init:t.metrics
+        ~f:(fun a (key, data) -> String.Map.set a ~key ~data) m
 end
