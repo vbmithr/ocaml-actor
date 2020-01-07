@@ -380,6 +380,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       Prometheus.KLL.update w.quantiles_completed (Time_ns.Span.to_sec completed_time)
 
   let request_handler w stop _saddr reqd =
+    let open Prometheus in
     let headers =
       Httpaf.Headers.of_list ["Content-Type", "text/plain; version=0.0.4"] in
     let labels = ["hostname", Unix.gethostname (); "actor", w.full_name ] in
@@ -387,21 +388,17 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     let resp = Response.create ~headers `OK in
     let nb_resps, nb_reqs = nb_pending_requests w in
     let metrics = [
-      Prometheus.counter
-        ~help:"Total number of events since actor startup"
-        ~labels "actor_events_total" (Float.of_int w.nb_events) ;
-      Prometheus.gauge
-        ~help:"Current number of pending requests"
-        ~labels "actor_pending_requests_total" (Float.of_int nb_reqs) ;
-      Prometheus.gauge
-        ~help:"Current number of pending responses"
-        ~labels "actor_pending_responses_total" (Float.of_int nb_resps) ;
-      Prometheus.summary
-        ~help:"Summary of treated time"
-        ~labels "actor_treated_time_seconds" (summary_of_treated w)  ;
-      Prometheus.summary
-        ~help:"Summary of completed time"
-        ~labels "actor_completed_time_seconds" (summary_of_completed w)  ;
+      counter "actor_events_total"
+        ~help:"Total number of events since startup"
+        [ metric ~labels (Float.of_int w.nb_events) ] ;
+      gauge "actor_pending_total"
+        ~help:"Current number of pending items"
+        [ metric ~labels:(("type","request")::labels)  (Float.of_int nb_reqs) ;
+          metric ~labels:(("type","response")::labels) (Float.of_int nb_resps) ] ;
+      summary "actor_time_seconds"
+        ~help:"Summary of processing time"
+        [ metric ~labels:(("time","treated")::labels)   (summary_of_treated w) ;
+          metric ~labels:(("time","completed")::labels) (summary_of_completed w) ] ;
     ] in
     let init = List.map (w.prometheus_metrics ()) ~f:(Prometheus.add_labels labels) in
     let metrics = List.fold_left metrics ~init ~f:begin fun a data ->
