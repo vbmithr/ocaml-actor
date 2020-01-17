@@ -1,3 +1,9 @@
 (test
  (name test)
- (libraries logs.fmt alcotest-async core async actor))
+ (libraries
+   actor
+   core
+   async
+   alcotest
+   alcotest-async
+   logs-async-reporter))

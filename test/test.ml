@@ -53,15 +53,6 @@ end
 
 let src = Logs.Src.create "ocaml-actor.test"
 
-let set_reporter () =
-  let logs =
-    Option.Monad_infix.(Sys.getenv "OVH_LOGS_URL" >>| Uri.of_string) in
-  let metrics =
-    Option.Monad_infix.(Sys.getenv "OVH_METRICS_URL" >>| Uri.of_string) in
-  Logs_async_ovh.udp_reporter ?logs ?metrics () >>= fun reporter ->
-  Logs.set_reporter reporter ;
-  Deferred.unit
-
 let base_name = ["test"]
 
 let worker_init () =
@@ -89,12 +80,12 @@ let worker_no_request () =
 
 let basic =
   "basic", [
-    test_case "set_reporter" `Quick set_reporter ;
     test_case "init" `Quick worker_init ;
     test_case "no_request" `Quick worker_no_request ;
   ]
 
 let () =
+  Logs.set_reporter (Logs_async_reporter.reporter ()) ;
   Logs.set_level ~all:true (Some Debug) ;
   run "actor" [
     basic

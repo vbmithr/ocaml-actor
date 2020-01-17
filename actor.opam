@@ -1,0 +1,28 @@
+opam-version: "2.0"
+authors: "Vincent Bernardoff <vb@luminar.eu.org>"
+maintainer: "Vincent Bernardoff <vb@luminar.eu.org>"
+homepage: "https://github.com/vbmithr/ocaml-fastrest"
+bug-reports: "https://github.com/vbmithr/ocaml-fastrest/issues"
+dev-repo: "git+https://github.com/vbmithr/ocaml-fastrest"
+doc: "https://vbmithr.github.io/ocaml-fastrest/doc"
+build: [ "dune" "build" "-j" jobs "-p" name ]
+run-test: [ "dune" "runtest" "-j" jobs "-p" name ]
+depends: [
+  "dune" {>= "1.11.4"}
+  "core" {>= "v0.12.4"}
+  "async" {>= "v0.12.0"}
+  "prometheus" {= version}
+  "httpaf" {>= "0.6.5"}
+  "httpaf-async" {>= "0.6.5"}
+  "containers" {>= "2.8"}
+  "logs-async" {= version}
+  "async-uri" {= version}
+  "ezjsonm" {>= "1.1.0"}
+  "ocplib-json-typed" {>= "0.7.1"}
+  "logs-async-reporter" {with-test & = version}
+  "alcotest" {with-test & >= "0.8.5"}
+  "alcotest-async" {with-test & >= "0.8.5"}
+]
+synopsis: "Actor model for OCaml"
+description: """
+"""

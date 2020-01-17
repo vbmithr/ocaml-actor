@@ -3,13 +3,10 @@
  (public_name actor)
  (modules Actor_s Actor_types Actor)
  (libraries
+   core
+   async
    prometheus
    httpaf
    httpaf-async
    containers.data
-   core
-   async
-   logs-async
-   logs-async-reporter
-   logs-async-ovh
-   uri))
+   logs-async))
