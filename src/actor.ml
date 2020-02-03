@@ -169,7 +169,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
         | None ->
           merge w (Any_request request) None
         | Some (Message { req = old; _ }) ->
-          Deferred.(don't_wait_for (ignore (Mvar.take message_box))) ;
+          Deferred.(don't_wait_for (ignore_m (Mvar.take message_box))) ;
           merge w (Any_request request) (Some (Any_request old))
       with
       | None -> Deferred.unit
@@ -252,9 +252,9 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     w.nb_events <- Int.succ w.nb_events ;
     may_raise_closed w ;
     let level = Event.level evt in
-    if level >= w.limits.backlog_level then
+    if Caml.(level >= w.limits.backlog_level) then
       EventRing.push_back
-        (List.Assoc.find_exn ~equal:(=) w.event_log level)
+        (List.Assoc.find_exn ~equal:Caml.(=) w.event_log level)
         (Timestamped_evt.create w.calibrator evt)
 
   let log_event w evt =
@@ -585,10 +585,10 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     | None, _  -> assert false
     | Some state, _ -> state
 
-  let latest_events ?(after=Time_ns.min_value) w =
+  let latest_events ?(after=Time_ns.epoch) w =
     List.map w.event_log ~f:begin fun (level, ring) ->
-      level, Array.filter_map (EventRing.to_array ring)
-        ~f:(fun { ts ; evt } -> if ts >= after then Some (ts, evt) else None)
+      level, Array.filter_map (EventRing.to_array ring) ~f:(fun { ts ; evt } ->
+          if Time_ns.is_later ts ~than:after then Some (ts, evt) else None)
     end
 
   let status { status ; _ } = status
