@@ -8,21 +8,22 @@ doc: "https://vbmithr.github.io/ocaml-fastrest/doc"
 build: [ "dune" "build" "-j" jobs "-p" name ]
 run-test: [ "dune" "runtest" "-j" jobs "-p" name ]
 depends: [
+  "ocaml" {>= "4.08.0"}
   "dune" {>= "1.11.4"}
   "core" {>= "v0.12.4"}
   "async" {>= "v0.12.0"}
-  "prometheus" {= version}
+  "prom" {>= "0.1"}
   "httpaf" {>= "0.6.5"}
   "httpaf-async" {>= "0.6.5"}
   "containers" {>= "2.8"}
-  "logs-async" {= version}
-  "async-uri" {= version}
+  "logs-async" {>= "1.1"}
+  "async-uri" {>= "0.1"}
   "ezjsonm" {>= "1.1.0"}
   "ocplib-json-typed" {>= "0.7.1"}
-  "logs-async-reporter" {with-test & = version}
+  "logs-async-reporter" {with-test & >= "1.1"}
   "alcotest" {with-test & >= "0.8.5"}
   "alcotest-async" {with-test & >= "0.8.5"}
 ]
 synopsis: "Actor model for OCaml"
-description: """
-"""
+description: """A framework to write actor-like services in OCaml,
+extracted from the Tezos source code and adapted to Async"""
