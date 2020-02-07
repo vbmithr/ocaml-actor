@@ -287,6 +287,6 @@ module type S = sig
       for a number of seconds given in the {!Actor_types.limits}. *)
   val list : 'a table -> (string * 'a t) list
 
-  val set_metrics : _ t -> (string * (unit -> Prometheus.t)) list -> unit
-  val merge_metrics : _ t -> (string * (unit -> Prometheus.t)) list -> unit
+  val set_metrics : _ t -> (string * (unit -> Prom.t)) list -> unit
+  val merge_metrics : _ t -> (string * (unit -> Prom.t)) list -> unit
 end

@@ -110,7 +110,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
 
     calibrator : Time_stamp_counter.Calibrator.t ;
     mutable prometheus: (Socket.Address.Inet.t, int) Tcp.Server.t option ;
-    mutable metrics: (unit -> Prometheus.t) String.Map.t ;
+    mutable metrics: (unit -> Prom.t) String.Map.t ;
 
     mutable nb_events : int ;
     mutable total_treated : int ;
@@ -118,8 +118,8 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     mutable total_treated_time : Time_ns.Span.t ;
     mutable total_completed_time : Time_ns.Span.t ;
 
-    quantiles_treated   : Prometheus.KLL.t ;
-    quantiles_completed : Prometheus.KLL.t ;
+    quantiles_treated   : Prom.KLL.t ;
+    quantiles_completed : Prom.KLL.t ;
   }
 
   and current_request = {
@@ -139,15 +139,15 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
   exception Exit_worker_loop of Error.t option
 
   let summary_of_treated { total_treated; total_treated_time; quantiles_treated; _ } = {
-    Prometheus.count = total_treated ;
-    Prometheus.sum = Time_ns.Span.to_sec total_treated_time;
-    data = quantiles_treated, Prometheus.FSet.of_list [0.5;0.9;0.99]
+    Prom.count = total_treated ;
+    Prom.sum = Time_ns.Span.to_sec total_treated_time;
+    data = quantiles_treated, Prom.FSet.of_list [0.5;0.9;0.99]
   }
 
   let summary_of_completed { total_completed; total_completed_time; quantiles_completed; _ } = {
-    Prometheus.count = total_completed ;
-    Prometheus.sum = Time_ns.Span.to_sec total_completed_time;
-    data = quantiles_completed, Prometheus.FSet.of_list [0.5;0.9;0.99]
+    Prom.count = total_completed ;
+    Prom.sum = Time_ns.Span.to_sec total_completed_time;
+    data = quantiles_completed, Prom.FSet.of_list [0.5;0.9;0.99]
   }
 
   let nb_pending_requests : type a. a t -> int * int = fun w ->
@@ -252,9 +252,9 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
     w.nb_events <- Int.succ w.nb_events ;
     may_raise_closed w ;
     let level = Event.level evt in
-    if Caml.(level >= w.limits.backlog_level) then
+    if Poly.(level >= w.limits.backlog_level) then
       EventRing.push_back
-        (List.Assoc.find_exn ~equal:Caml.(=) w.event_log level)
+        (List.Assoc.find_exn ~equal:Poly.(=) w.event_log level)
         (Timestamped_evt.create w.calibrator evt)
 
   let log_event w evt =
@@ -360,7 +360,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       w.total_treated <- succ w.total_treated ;
       let treated_time = Time_ns.diff treated pushed in
       w.total_treated_time <- Time_ns.Span.(w.total_treated_time + treated_time) ;
-      Prometheus.KLL.update w.quantiles_treated (Time_ns.Span.to_sec treated_time) ;
+      Prom.KLL.update w.quantiles_treated (Time_ns.Span.to_sec treated_time) ;
       let level = Request.level current_request in
       Logger.msg level begin fun m ->
         m "Request %a" Request.pp current_request
@@ -377,10 +377,10 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
       w.total_completed <- succ w.total_completed ;
       let completed_time = Time_ns.diff completed pushed in
       w.total_completed_time <- Time_ns.Span.(w.total_completed_time + completed_time) ;
-      Prometheus.KLL.update w.quantiles_completed (Time_ns.Span.to_sec completed_time)
+      Prom.KLL.update w.quantiles_completed (Time_ns.Span.to_sec completed_time)
 
   let request_handler w stop _saddr reqd =
-    let open Prometheus in
+    let open Prom in
     let headers =
       Httpaf.Headers.of_list ["Content-Type", "text/plain; version=0.0.4"] in
     let labels = ["hostname", Unix.gethostname (); "actor", w.full_name ] in
@@ -405,7 +405,7 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
           (("time","completed")::labels), create_series (summary_of_completed w) ] ::
       metrics in
     Reqd.respond_with_string
-      reqd resp (Format.asprintf "%a" Prometheus.pp_list metrics) ;
+      reqd resp (Format.asprintf "%a" Prom.pp_list metrics) ;
     Ivar.fill stop ()
 
   let start_prometheus w ~port =
@@ -527,8 +527,8 @@ module Make (Event : EVENT) (Request : REQUEST) (Types : TYPES) = struct
                 prometheus = None;
                 metrics = String.Map.empty ;
 
-                quantiles_treated = Prometheus.KLL.create () ;
-                quantiles_completed = Prometheus.KLL.create () ;
+                quantiles_treated = Prom.KLL.create () ;
+                quantiles_completed = Prom.KLL.create () ;
 
                 total_treated = 0;
                 total_completed = 0;

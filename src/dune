@@ -5,7 +5,7 @@
  (libraries
    core
    async
-   prometheus
+   prom
    httpaf
    httpaf-async
    containers.data
