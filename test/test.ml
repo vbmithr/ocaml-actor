@@ -85,8 +85,6 @@ let basic =
   ]
 
 let () =
-  Logs.set_reporter (Logs_async_reporter.reporter ()) ;
-  Logs.set_level ~all:true (Some Debug) ;
   run "actor" [
     basic
   ]

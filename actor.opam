@@ -17,10 +17,6 @@ depends: [
   "httpaf-async" {>= "0.6.5"}
   "containers" {>= "2.8"}
   "logs-async" {>= "1.1"}
-  "async-uri" {>= "0.1"}
-  "ezjsonm" {>= "1.1.0"}
-  "ocplib-json-typed" {>= "0.7.1"}
-  "logs-async-reporter" {with-test & >= "1.1"}
   "alcotest" {with-test & >= "0.8.5"}
   "alcotest-async" {with-test & >= "0.8.5"}
 ]

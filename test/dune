@@ -5,5 +5,4 @@
    core
    async
    alcotest
-   alcotest-async
-   logs-async-reporter))
+   alcotest-async))
