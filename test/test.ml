@@ -1,7 +1,6 @@
 open Core
 open Async
 
-open Alcotest
 open Alcotest_async
 
 module Event = struct
@@ -84,7 +83,11 @@ let basic =
     test_case "no_request" `Quick worker_no_request ;
   ]
 
-let () =
+let main () =
   run "actor" [
     basic
   ]
+
+let () =
+  don't_wait_for (main ()) ;
+  never_returns (Scheduler.go ())

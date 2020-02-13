@@ -4,5 +4,4 @@
    actor
    core
    async
-   alcotest
    alcotest-async))
