@@ -17,7 +17,7 @@ depends: [
   "httpaf-async" {>= "0.6.5"}
   "containers" {>= "2.8"}
   "logs-async" {>= "1.1"}
-  "alcotest-async" {with-test & >= "1.0.0"}
+  "alcotest-async" {with-test & >= "1.0.1"}
 ]
 synopsis: "Actor model for OCaml"
 description: """A framework to write actor-like services in OCaml,
